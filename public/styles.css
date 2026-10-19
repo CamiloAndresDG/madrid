@@ -110,12 +110,21 @@ p { margin: 0 0 .75rem; }
   background: var(--ink-deep); color: var(--on-deep);
 }
 .pride-band {
-  position: relative; overflow: hidden; height: 4px;
+  position: relative; overflow: hidden; height: 5px; background: #732982;
   animation: band-sweep 1.1s cubic-bezier(.16, 1, .3, 1) both;
-  background: linear-gradient(90deg,
-    #E40303 0 16.66%, #FF8C00 16.66% 33.33%, #FFED00 33.33% 50%,
-    #008026 50% 66.66%, #24408E 66.66% 83.33%, #732982 83.33% 100%);
 }
+/* Los colores de la bandera fluyen despacio a lo largo de la banda (dos periodos para que el bucle no salte) */
+.pride-band::before {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 200%;
+  background: linear-gradient(90deg,
+    #E40303 0 8.333%, #FF8C00 8.333% 16.666%, #FFED00 16.666% 25%,
+    #008026 25% 33.333%, #24408E 33.333% 41.666%, #732982 41.666% 50%,
+    #E40303 50% 58.333%, #FF8C00 58.333% 66.666%, #FFED00 66.666% 75%,
+    #008026 75% 83.333%, #24408E 83.333% 91.666%, #732982 91.666% 100%);
+  animation: band-flow 18s linear infinite;
+  will-change: transform;
+}
+@keyframes band-flow { to { transform: translateX(-50%); } }
 .brand { display: flex; align-items: center; gap: .55rem; color: var(--on-deep); text-decoration: none; min-width: 0; }
 .brand img { width: 28px; height: 28px; flex: none; }
 .brand-name { font: 800 1rem/1 var(--font-display); letter-spacing: -.01em; white-space: nowrap; }
@@ -553,11 +562,11 @@ button[aria-busy="true"]::after {
 /* Brillo que recorre la banda del orgullo cada pocos segundos */
 .pride-band::after {
   content: ""; position: absolute; inset: 0; width: 30%;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .75), transparent);
-  transform: translateX(-120%); animation: band-shine 7s ease-in-out 1.4s infinite;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .85), transparent);
+  transform: translateX(-120%); animation: band-shine 6s ease-in-out 1.2s infinite;
 }
 @keyframes band-shine { 0% { transform: translateX(-120%); } 22%, 100% { transform: translateX(440%); } }
-@media (prefers-reduced-motion: reduce) { .pride-band { animation: none; } .pride-band::after { display: none; } }
+@media (prefers-reduced-motion: reduce) { .pride-band, .pride-band::before { animation: none; } .pride-band::after { display: none; } }
 
 /* ---------- Foro ---------- */
 .forum-filters { margin-bottom: 1rem; }

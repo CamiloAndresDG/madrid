@@ -14,10 +14,11 @@ const PORT = process.env.PORT || 3000;
 const app = express();
 app.use(compression());
 app.use(express.json({ limit: '25mb' })); // el foro envía fotos (ya reducidas en el navegador)
-// Estáticos: el HTML siempre se revalida; CSS, JS e imágenes se cachean una hora con revalidación por ETag
+// Estáticos: HTML, CSS y JS se revalidan siempre (ETag: si no ha cambiado, respuesta 304 vacía),
+// así cada despliegue se ve al momento. Las imágenes del sitio se cachean un día.
 app.use(express.static(path.join(__dirname, '..', 'public'), {
   setHeaders(res, file) {
-    res.setHeader('Cache-Control', file.endsWith('.html') ? 'no-cache' : 'public, max-age=3600, must-revalidate');
+    res.setHeader('Cache-Control', /\.(png|jpe?g|webp|svg|ico)$/.test(file) ? 'public, max-age=86400' : 'no-cache');
   },
 }));
 
