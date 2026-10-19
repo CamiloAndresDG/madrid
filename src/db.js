@@ -112,9 +112,34 @@ const TABLES = ['players', 'sessions', 'responses', 'attendance', 'infractions',
 // las cierra a esa API; el servidor entra como propietario de las tablas y no le afecta.
 const LOCKDOWN = TABLES.map((t) => `ALTER TABLE ${t} ENABLE ROW LEVEL SECURITY;`).join('\n');
 
+// Resumen de DATABASE_URL para los logs, sin mostrar la contraseña.
+function describeConnection() {
+  try {
+    const u = new URL(DATABASE_URL);
+    const pw = decodeURIComponent(u.password);
+    const hints = [];
+    if (/^\[.*\]$/.test(pw) || pw === 'YOUR-PASSWORD') hints.push('la contraseña sigue siendo el texto de ejemplo o lleva corchetes [ ]');
+    if (/[@#/?%:&\s]/.test(u.password)) hints.push('la contraseña tiene caracteres especiales sin codificar');
+    if (u.hostname.startsWith('db.') && u.hostname.endsWith('.supabase.co')) {
+      hints.push('es la conexión directa de Supabase; usa la del "Session pooler" (host *.pooler.supabase.com, usuario postgres.<proyecto>)');
+    }
+    if (u.hostname.endsWith('pooler.supabase.com') && !u.username.includes('.')) {
+      hints.push('con el pooler el usuario debe ser postgres.<id-del-proyecto>');
+    }
+    return `host=${u.hostname} port=${u.port || 5432} user=${u.username} db=${u.pathname.slice(1)} ` +
+      `contraseña=${pw.length} caracteres${hints.length ? ` · Revisa: ${hints.join('; ')}` : ''}`;
+  } catch {
+    return 'DATABASE_URL no es una URL válida (debe empezar por postgresql://)';
+  }
+}
+
 let ready;
 function init() {
-  ready ??= pool.query(SCHEMA + LOCKDOWN);
+  ready ??= pool.query(SCHEMA + LOCKDOWN).catch((e) => {
+    ready = undefined;
+    e.message = `${e.message}\n  Conexión: ${describeConnection()}`;
+    throw e;
+  });
   return ready;
 }
 
