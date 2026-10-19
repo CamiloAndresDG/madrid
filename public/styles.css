@@ -655,3 +655,14 @@ dialog.lightbox { width: min(1100px, calc(100% - 16px)); max-height: calc(100% -
 @media (max-width: 720px) {
   .account-menu { position: fixed; top: 60px; right: 12px; left: auto; }
 }
+
+/* Aviso de versión nueva */
+.update-bar {
+  position: fixed; z-index: 60; left: 50%; top: 72px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: .75rem; width: max-content; max-width: calc(100% - 24px);
+  padding: .5rem .5rem .5rem 1rem; border-radius: var(--r-md); background: var(--text); color: var(--bg);
+  font-weight: 600; font-size: .9rem; box-shadow: 0 12px 32px rgba(12, 7, 24, .3); animation: menu-in 220ms var(--ease-out);
+}
+
+/* El círculo de iniciales respeta hidden (sin sesión no se ve) */
+.account-initials[hidden] { display: none; }

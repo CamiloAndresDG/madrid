@@ -21,6 +21,8 @@ const ASSET_V = (process.env.RENDER_GIT_COMMIT || String(Date.now())).slice(0, 1
 const INDEX_HTML = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8').replaceAll('__V__', ASSET_V);
 const sendIndex = (_req, res) => res.set('Cache-Control', 'no-cache').type('html').send(INDEX_HTML);
 app.get(['/', '/index.html'], sendIndex);
+// Versión desplegada: la web abierta la consulta para saber si hay una nueva
+app.get('/api/version', (_req, res) => res.set('Cache-Control', 'no-store').json({ v: ASSET_V }));
 app.use(express.json({ limit: '25mb' })); // el foro envía fotos (ya reducidas en el navegador)
 // Estáticos: HTML, CSS y JS se revalidan siempre (ETag: si no ha cambiado, respuesta 304 vacía),
 // así cada despliegue se ve al momento. Las imágenes del sitio se cachean un día.

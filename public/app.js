@@ -128,13 +128,16 @@ function renderNav() {
   const h = location.hash || '#/';
   const items = [];
   if (S.token) {
-    items.push(['#/', 'Convocatoria', 'calendar'], ['#/foro', 'Foro', 'megaphone'], ['#/clasificacion', 'Clasificación', 'chart'], ['#/resultados', 'Resultados', 'trophy']);
+    items.push(['#/foro', 'Foro', 'megaphone'], ['#/', 'Convocatoria', 'calendar'], ['#/resultados', 'Resultados', 'trophy']);
   }
   items.push(['#/normas', 'Normas', 'book']);
   if (S.token && canManage()) items.push(['#/admin', 'Coordinación', 'shield']);
   if (!S.token) items.unshift(['#/', 'Inicio', 'calendar']);
   $nav.innerHTML = items.map(([href, label, ic]) => {
-    const active = href === '#/' ? (h === '#/' || h === '#') : h.startsWith(href);
+    // Resultados incluye la clasificación, así que también se ilumina en esas páginas
+    const active = href === '#/' ? (h === '#/' || h === '#')
+      : href === '#/resultados' ? (h.startsWith('#/resultados') || h.startsWith('#/clasificacion'))
+        : h.startsWith(href);
     return `<a href="${href}"${active ? ' aria-current="page"' : ''}>${icon(ic)}<span>${label}</span></a>`;
   }).join('');
   renderAccount();
@@ -222,7 +225,34 @@ async function render() {
 }
 window.addEventListener('offline', () => toast('Sin conexión: los cambios no se guardarán hasta que vuelva', true));
 window.addEventListener('online', () => { toast('Conexión recuperada'); render(); });
-window.addEventListener('hashchange', render);
+// ---------- Versión nueva desplegada ----------
+// La web no se recarga al cambiar de sección, así que una pestaña abierta seguiría con la versión vieja.
+// Se consulta la versión al volver a la pestaña y cada pocos minutos: al cambiar de sección se recarga sola
+// y, mientras tanto, se ofrece «Actualizar».
+const BOOT_V = (document.querySelector('script[src*="app.js"]')?.getAttribute('src') || '').split('v=')[1] || '';
+let newVersion = false;
+async function checkVersion() {
+  if (!BOOT_V || newVersion || document.hidden) return;
+  try {
+    const { v } = await fetch('/api/version', { cache: 'no-store' }).then((r) => r.json());
+    if (v && v !== BOOT_V) {
+      newVersion = true;
+      const bar = document.createElement('div');
+      bar.className = 'update-bar'; bar.setAttribute('role', 'status');
+      bar.innerHTML = `<span>Hay una versión nueva de la web.</span><button class="btn-primary btn-sm" type="button">Actualizar</button>`;
+      bar.querySelector('button').addEventListener('click', () => location.reload());
+      document.body.appendChild(bar);
+    }
+  } catch (e) { /* sin conexión: se vuelve a intentar más tarde */ }
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkVersion(); });
+window.addEventListener('focus', checkVersion);
+setInterval(checkVersion, 3 * 60 * 1000);
+
+window.addEventListener('hashchange', () => {
+  if (newVersion) { location.reload(); return; } // al cambiar de sección, se carga la versión nueva
+  render();
+});
 
 // Delegación de eventos: data-act="nombre" -> actions.nombre(el, event)
 const actions = {};
@@ -490,7 +520,7 @@ async function viewStats(sub) {
 
 function renderDashboard() {
   const sub = S.statsSub;
-  $app.innerHTML = `<div class="page-head"><h1>Clasificación</h1></div>
+  $app.innerHTML = `${resultsTabs('clasificacion')}<div class="page-head"><h1>Clasificación</h1></div>
     <nav class="seg-tabs" aria-label="Vista">
       <a href="#/clasificacion"${sub === 'general' ? ' aria-current="page"' : ''}>General</a>
       <a href="#/clasificacion/yo"${sub === 'yo' ? ' aria-current="page"' : ''}>Mi temporada</a>
@@ -918,10 +948,17 @@ function savePost(form) {
 
 // ---------- Resultados ----------
 
+// Pestañas de la sección Resultados: partidos y clasificación
+function resultsTabs(current) {
+  return `<nav class="tabs" aria-label="Resultados y clasificación">
+    <a href="#/resultados"${current === 'partidos' ? ' aria-current="page"' : ''}>Partidos</a>
+    <a href="#/clasificacion"${current === 'clasificacion' ? ' aria-current="page"' : ''}>Clasificación</a></nav>`;
+}
+
 async function viewResultsList() {
   if (!S.token) return viewHome();
   const sessions = (await api('/api/sessions')).filter((s) => s.has_results);
-  $app.innerHTML = `<div class="page-head"><h1>Resultados</h1></div>${sessions.length ? `<div class="card">${sessions.map((s) => `
+  $app.innerHTML = `<div class="page-head"><h1>Resultados</h1></div>${resultsTabs('partidos')}${sessions.length ? `<div class="card">${sessions.map((s) => `
     <a class="link-row" href="#/resultados/${s.id}"><span><strong>${esc(fmtDate(s.date))}</strong>
       <span class="small muted"> · ${plural(s.yes_count, 'apuntado', 'apuntados')}</span></span>${icon('chevron')}</a>`).join('')}
     </div>` : '<div class="card empty"><h2>Aún no hay resultados</h2><p class="muted">Aparecerán aquí cuando Coordinación los apunte al terminar cada entreno.</p></div>'}`;
@@ -1020,7 +1057,8 @@ async function viewAdmin(tab = 'convocatoria') {
   }[tab];
   if (!fn) { location.hash = '#/admin'; return; }
   $app.innerHTML = head + '<div id="adminBody"><p class="muted">Cargando…</p></div>';
-  await fn(document.getElementById('adminBody'));
+  const body = document.getElementById('adminBody');
+  if (body) await fn(body);
 }
 
 function adminTabsHtml(tab, ov) {
@@ -1102,6 +1140,7 @@ const toLocalInput = (iso) => {
 async function adminConvocatoria(el) {
   if (!S.adminSessionId) return noSession(el);
   const d = await api(`/api/admin/sessions/${S.adminSessionId}`);
+  if (!el.isConnected) return; // el usuario ya ha cambiado de pestaña
   S.detail = d;
   const s = d.session;
   const players = (await api('/api/admin/players')).filter((p) => p.active);
@@ -1173,7 +1212,9 @@ async function adminConvocatoria(el) {
     </div>
   </div>`;
 
-  document.getElementById('sessionForm').onsubmit = (e) => {
+  const sessionForm = document.getElementById('sessionForm');
+  if (!sessionForm) return;
+  sessionForm.onsubmit = (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
     const body = Object.fromEntries(f.entries());
