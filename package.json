@@ -5,15 +5,19 @@
   "description": "Convocatorias, prioridades, incidencias y resultados de los entrenamientos de Fútbol 7 Gmadrid",
   "main": "src/server.js",
   "engines": {
-    "node": ">=22.13"
+    "node": ">=20"
   },
   "scripts": {
-    "start": "node --disable-warning=ExperimentalWarning src/server.js",
-    "dev": "node --disable-warning=ExperimentalWarning --watch src/server.js",
-    "seed": "node --disable-warning=ExperimentalWarning scripts/seed.js",
-    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js"
+    "start": "node src/server.js",
+    "demo": "node scripts/dev-demo.js",
+    "seed": "node scripts/seed.js",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
-    "express": "4.21.2"
+    "express": "4.21.2",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "embedded-postgres": "^17.2.0-beta.15"
   }
 }

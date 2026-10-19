@@ -1,27 +1,34 @@
-const fs = require('node:fs');
-const path = require('node:path');
-const { DatabaseSync } = require('node:sqlite');
+// Postgres (Supabase en producción). DATABASE_URL = cadena de conexión del "Session pooler" de Supabase.
+const { Pool } = require('pg');
 
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'futbol7.db');
-fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+const DATABASE_URL = process.env.DATABASE_URL;
+if (!DATABASE_URL) {
+  throw new Error('Falta DATABASE_URL (cadena de conexión de Postgres/Supabase).');
+}
+const isLocal = /@(localhost|127\.0\.0\.1)[:/]/.test(DATABASE_URL);
 
-const db = new DatabaseSync(DB_PATH);
-db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: isLocal ? false : { rejectUnauthorized: false },
+  max: Number(process.env.DB_POOL_MAX) || 5,
+});
 
-db.exec(`
+const NOW = `to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
+
+const SCHEMA = `
 CREATE TABLE IF NOT EXISTS players (
-  id INTEGER PRIMARY KEY,
+  id SERIAL PRIMARY KEY,
   name TEXT NOT NULL,
   is_coordinator INTEGER NOT NULL DEFAULT 0,
   active INTEGER NOT NULL DEFAULT 1,
   attendance_exempt INTEGER NOT NULL DEFAULT 0,  -- lesión, temporada fuera... (no aplica el mínimo de 4)
   exempt_note TEXT,
   token TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  created_at TEXT NOT NULL DEFAULT ${NOW}
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
-  id INTEGER PRIMARY KEY,
+  id SERIAL PRIMARY KEY,
   date TEXT NOT NULL UNIQUE,                 -- YYYY-MM-DD (miércoles)
   start_time TEXT NOT NULL DEFAULT '22:00',
   location TEXT NOT NULL DEFAULT 'Polideportivo Marqués de Samaranch',
@@ -56,18 +63,18 @@ CREATE TABLE IF NOT EXISTS attendance (
 );
 
 CREATE TABLE IF NOT EXISTS infractions (
-  id INTEGER PRIMARY KEY,
+  id SERIAL PRIMARY KEY,
   session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
   type TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'confirmed' CHECK (status IN ('pending','confirmed','justified')),
   source TEXT NOT NULL DEFAULT 'manual',     -- manual | auto | attendance
   note TEXT,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  created_at TEXT NOT NULL DEFAULT ${NOW}
 );
 
 CREATE TABLE IF NOT EXISTS teams (
-  id INTEGER PRIMARY KEY,
+  id SERIAL PRIMARY KEY,
   session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   color TEXT
@@ -80,7 +87,7 @@ CREATE TABLE IF NOT EXISTS team_players (
 );
 
 CREATE TABLE IF NOT EXISTS matches (
-  id INTEGER PRIMARY KEY,
+  id SERIAL PRIMARY KEY,
   session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   home_team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
   away_team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
@@ -97,18 +104,43 @@ CREATE TABLE IF NOT EXISTS player_stats (
   mvp INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (session_id, player_id)
 );
-`);
+`;
 
-function tx(fn) {
-  db.exec('BEGIN');
+const TABLES = ['players', 'sessions', 'responses', 'attendance', 'infractions', 'teams', 'team_players', 'matches', 'player_stats'];
+
+// Supabase expone las tablas de "public" por su API REST: activar RLS sin políticas
+// las cierra a esa API; el servidor entra como propietario de las tablas y no le afecta.
+const LOCKDOWN = TABLES.map((t) => `ALTER TABLE ${t} ENABLE ROW LEVEL SECURITY;`).join('\n');
+
+let ready;
+function init() {
+  ready ??= pool.query(SCHEMA + LOCKDOWN);
+  return ready;
+}
+
+function api(runner) {
+  return {
+    all: async (sql, params = []) => (await runner.query(sql, params)).rows,
+    get: async (sql, params = []) => (await runner.query(sql, params)).rows[0],
+    run: async (sql, params = []) => runner.query(sql, params),
+  };
+}
+
+const db = api(pool);
+
+async function tx(fn) {
+  const client = await pool.connect();
   try {
-    const r = fn();
-    db.exec('COMMIT');
+    await client.query('BEGIN');
+    const r = await fn(api(client));
+    await client.query('COMMIT');
     return r;
   } catch (e) {
-    db.exec('ROLLBACK');
+    await client.query('ROLLBACK').catch(() => {});
     throw e;
+  } finally {
+    client.release();
   }
 }
 
-module.exports = { db, tx, DB_PATH };
+module.exports = { db, tx, init, pool };

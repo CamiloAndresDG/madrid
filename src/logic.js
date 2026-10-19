@@ -81,32 +81,32 @@ function sessionTimes(session) {
 // ---------- Consultas básicas ----------
 
 const q = {
-  session: db.prepare('SELECT * FROM sessions WHERE id = ?'),
-  prevSession: db.prepare('SELECT * FROM sessions WHERE date < ? AND cancelled = 0 ORDER BY date DESC LIMIT 1'),
-  yesResponses: db.prepare(`
+  session: (id) => db.get('SELECT * FROM sessions WHERE id = $1', [id]),
+  prevSession: (date) => db.get('SELECT * FROM sessions WHERE date < $1 AND cancelled = 0 ORDER BY date DESC LIMIT 1', [date]),
+  yesResponses: (sid) => db.all(`
     SELECT r.*, p.name, p.is_coordinator FROM responses r JOIN players p ON p.id = r.player_id
-    WHERE r.session_id = ? AND r.answer = 'yes'`),
-  attendance: db.prepare('SELECT player_id, status FROM attendance WHERE session_id = ?'),
-  infractionsIn: db.prepare(`SELECT * FROM infractions WHERE session_id = ? AND status = 'confirmed'`),
-  seriousCount: db.prepare(`SELECT player_id, type FROM infractions WHERE status = 'confirmed'`),
+    WHERE r.session_id = $1 AND r.answer = 'yes'`, [sid]),
+  attendance: (sid) => db.all('SELECT player_id, status FROM attendance WHERE session_id = $1', [sid]),
+  infractionsIn: (sid) => db.all(`SELECT * FROM infractions WHERE session_id = $1 AND status = 'confirmed'`, [sid]),
+  seriousCount: () => db.all(`SELECT player_id, type FROM infractions WHERE status = 'confirmed'`),
 };
 
-function getSession(id) { return q.session.get(id); }
-function previousSession(session) { return session ? q.prevSession.get(session.date) : undefined; }
+function getSession(id) { return q.session(id); }
+async function previousSession(session) { return session ? q.prevSession(session.date) : undefined; }
 
 function newCtx() { return { lists: new Map(), outcomes: new Map() }; }
 
 // Resultado de una sesión para cada jugador: attended | late | no_show | excused | left_out.
 // Si no se ha pasado lista, se asume que fueron los titulares y que los reservas se quedaron fuera.
-function sessionOutcome(session, ctx = newCtx()) {
+async function sessionOutcome(session, ctx = newCtx()) {
   if (!session) return new Map();
   if (ctx.outcomes.has(session.id)) return ctx.outcomes.get(session.id);
   const out = new Map();
-  const rows = q.attendance.all(session.id);
+  const rows = await q.attendance(session.id);
   if (rows.length) {
     for (const r of rows) out.set(r.player_id, r.status);
   } else {
-    const list = computeList(session, ctx);
+    const list = await computeList(session, ctx);
     for (const e of list.entries) out.set(e.player_id, e.role === 'titular' ? 'attended' : 'left_out');
   }
   ctx.outcomes.set(session.id, out);
@@ -117,25 +117,25 @@ function didAttend(status) { return status === 'attended' || status === 'late'; 
 
 // ---------- Sistema de prioridades ----------
 
-function computeList(session, ctx = newCtx()) {
+async function computeList(session, ctx = newCtx()) {
   if (ctx.lists.has(session.id)) return ctx.lists.get(session.id);
   ctx.lists.set(session.id, { entries: [] }); // evita ciclos
 
-  const prev = previousSession(session);
-  const prev2 = previousSession(prev);
-  const prevOutcome = sessionOutcome(prev, ctx);
+  const prev = await previousSession(session);
+  const prev2 = await previousSession(prev);
+  const prevOutcome = await sessionOutcome(prev, ctx);
 
   const penalties = new Map(); // player_id -> [{type, label, date}]
   const addPenalty = (inf, s) => {
     if (!penalties.has(inf.player_id)) penalties.set(inf.player_id, []);
     penalties.get(inf.player_id).push({ type: inf.type, label: INFRACTION_TYPES[inf.type]?.label || inf.type, date: s.date });
   };
-  if (prev) for (const inf of q.infractionsIn.all(prev.id)) addPenalty(inf, prev);
-  if (prev2) for (const inf of q.infractionsIn.all(prev2.id)) {
+  if (prev) for (const inf of await q.infractionsIn(prev.id)) addPenalty(inf, prev);
+  if (prev2) for (const inf of await q.infractionsIn(prev2.id)) {
     if ((INFRACTION_TYPES[inf.type]?.weeks || 1) >= 2) addPenalty(inf, prev2);
   }
 
-  const entries = q.yesResponses.all(session.id).map((r) => {
+  const entries = (await q.yesResponses(session.id)).map((r) => {
     let priority, reason;
     const pens = penalties.get(r.player_id);
     if (pens) {
@@ -191,16 +191,16 @@ function byTime(a, b) { return String(a.signed_up_at).localeCompare(String(b.sig
 
 // ---------- Incidencias ----------
 
-function seriousCounts() {
+async function seriousCounts() {
   const counts = new Map();
-  for (const r of q.seriousCount.all()) {
+  for (const r of await q.seriousCount()) {
     if (INFRACTION_TYPES[r.type]?.serious) counts.set(r.player_id, (counts.get(r.player_id) || 0) + 1);
   }
   return counts;
 }
 
-function isExpelled(playerId) {
-  return (seriousCounts().get(playerId) || 0) >= SERIOUS_LIMIT;
+async function isExpelled(playerId) {
+  return ((await seriousCounts()).get(playerId) || 0) >= SERIOUS_LIMIT;
 }
 
 // Qué incidencia (si alguna) supone borrarse ahora de una sesión.
@@ -224,9 +224,9 @@ function quarterOf(dateStr) {
   return `${y}-T${qn}`;
 }
 
-function seasonStats(now = new Date()) {
-  const players = db.prepare('SELECT * FROM players ORDER BY name').all();
-  const sessions = db.prepare('SELECT * FROM sessions WHERE cancelled = 0 ORDER BY date').all();
+async function seasonStats(now = new Date()) {
+  const players = await db.all('SELECT * FROM players ORDER BY name');
+  const sessions = await db.all('SELECT * FROM sessions WHERE cancelled = 0 ORDER BY date');
   const ctx = newCtx();
   const stats = new Map(players.map((p) => [p.id, {
     player_id: p.id, name: p.name, active: !!p.active, is_coordinator: !!p.is_coordinator,
@@ -239,7 +239,7 @@ function seasonStats(now = new Date()) {
   for (const s of sessions) {
     if (sessionTimes(s).endsAt > now) continue;
     const qk = quarterOf(s.date);
-    for (const [pid, status] of sessionOutcome(s, ctx)) {
+    for (const [pid, status] of await sessionOutcome(s, ctx)) {
       const st = stats.get(pid);
       if (!st) continue;
       st.quarters[qk] ??= { attended: 0, left_out: 0 };
@@ -251,13 +251,13 @@ function seasonStats(now = new Date()) {
   }
 
   // Partidos: cada jugador suma los puntos de su equipo (3 victoria, 1 empate)
-  const teamPlayers = db.prepare('SELECT team_id, player_id FROM team_players').all();
+  const teamPlayers = await db.all('SELECT team_id, player_id FROM team_players');
   const byTeam = new Map();
   for (const tp of teamPlayers) {
     if (!byTeam.has(tp.team_id)) byTeam.set(tp.team_id, []);
     byTeam.get(tp.team_id).push(tp.player_id);
   }
-  for (const m of db.prepare('SELECT * FROM matches').all()) {
+  for (const m of await db.all('SELECT * FROM matches')) {
     const apply = (teamId, gf, ga) => {
       for (const pid of byTeam.get(teamId) || []) {
         const st = stats.get(pid);
@@ -270,15 +270,15 @@ function seasonStats(now = new Date()) {
     apply(m.away_team_id, m.away_goals, m.home_goals);
   }
 
-  for (const ps of db.prepare('SELECT * FROM player_stats').all()) {
+  for (const ps of await db.all('SELECT * FROM player_stats')) {
     const st = stats.get(ps.player_id);
     if (!st) continue;
     st.goals += ps.goals; st.assists += ps.assists; st.saves += ps.saves; st.mvps += ps.mvp;
   }
 
-  const serious = seriousCounts();
+  const serious = await seriousCounts();
   const infCounts = new Map();
-  for (const r of db.prepare(`SELECT player_id, COUNT(*) c FROM infractions WHERE status='confirmed' GROUP BY player_id`).all()) {
+  for (const r of await db.all(`SELECT player_id, COUNT(*)::int c FROM infractions WHERE status='confirmed' GROUP BY player_id`)) {
     infCounts.set(r.player_id, r.c);
   }
 

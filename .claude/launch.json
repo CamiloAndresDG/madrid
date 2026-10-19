@@ -4,7 +4,7 @@
     {
       "name": "futbol7-demo",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["--disable-warning=ExperimentalWarning", "scripts/dev-demo.js"],
+      "runtimeArgs": ["scripts/dev-demo.js"],
       "port": 3000
     }
   ]

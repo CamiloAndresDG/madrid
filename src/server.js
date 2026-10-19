@@ -1,7 +1,7 @@
 const path = require('node:path');
 const crypto = require('node:crypto');
 const express = require('express');
-const { db, tx } = require('./db');
+const { db, tx, init } = require('./db');
 const L = require('./logic');
 
 const PORT = process.env.PORT || 3000;
@@ -24,11 +24,12 @@ class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
 const wrap = (fn) => (req, res, next) => {
-  try {
-    const out = fn(req, res);
-    if (out !== undefined) res.json(out);
-  } catch (e) { next(e); }
+  Promise.resolve()
+    .then(() => fn(req, res))
+    .then((out) => { if (out !== undefined) res.json(out); })
+    .catch(next);
 };
+const mw = (fn) => (req, res, next) => { Promise.resolve(fn(req, res)).then(() => next(), next); };
 
 function isAdmin(req) {
   const h = req.get('authorization') || '';
@@ -36,29 +37,26 @@ function isAdmin(req) {
   return tok.length === ADMIN_TOKEN.length &&
     crypto.timingSafeEqual(Buffer.from(tok), Buffer.from(ADMIN_TOKEN));
 }
-function playerFromReq(req) {
+async function playerFromReq(req) {
   const tok = req.get('x-player-token');
   if (!tok) return null;
-  return db.prepare('SELECT * FROM players WHERE token = ?').get(tok) || null;
+  return (await db.get('SELECT * FROM players WHERE token = $1', [tok])) || null;
 }
-function requireAdmin(req, _res, next) {
-  if (!isAdmin(req)) return next(new HttpError(401, 'Acceso solo para coordinación'));
-  next();
-}
-function requireAny(req, _res, next) {
-  req.player = playerFromReq(req);
+const requireAdmin = mw((req) => {
+  if (!isAdmin(req)) throw new HttpError(401, 'Acceso solo para coordinación');
+});
+const requireAny = mw(async (req) => {
+  req.player = await playerFromReq(req);
   req.admin = isAdmin(req);
-  if (!req.player && !req.admin) return next(new HttpError(401, 'Necesitas tu enlace personal'));
-  next();
-}
-function requirePlayer(req, _res, next) {
-  req.player = playerFromReq(req);
-  if (!req.player) return next(new HttpError(401, 'Enlace personal no válido'));
-  next();
-}
+  if (!req.player && !req.admin) throw new HttpError(401, 'Necesitas tu enlace personal');
+});
+const requirePlayer = mw(async (req) => {
+  req.player = await playerFromReq(req);
+  if (!req.player) throw new HttpError(401, 'Enlace personal no válido');
+});
 
-function sessionOr404(id) {
-  const s = L.getSession(Number(id));
+async function sessionOr404(id) {
+  const s = Number.isInteger(Number(id)) ? await L.getSession(Number(id)) : null;
   if (!s) throw new HttpError(404, 'Entrenamiento no encontrado');
   return s;
 }
@@ -80,17 +78,17 @@ function publicSession(s) {
   };
 }
 
-function playerName(id) {
-  return id ? db.prepare('SELECT name FROM players WHERE id = ?').get(id)?.name || null : null;
+async function playerName(id) {
+  return id ? (await db.get('SELECT name FROM players WHERE id = $1', [id]))?.name || null : null;
 }
 
-function listPayload(session, ctx) {
-  const list = L.computeList(session, ctx);
-  const noes = db.prepare(`
+async function listPayload(session, ctx) {
+  const list = await L.computeList(session, ctx);
+  const noes = await db.all(`
     SELECT r.player_id, p.name, r.cancel_reason, r.updated_at FROM responses r JOIN players p ON p.id = r.player_id
-    WHERE r.session_id = ? AND r.answer = 'no' ORDER BY p.name`).all(session.id);
+    WHERE r.session_id = $1 AND r.answer = 'no' ORDER BY p.name`, [session.id]);
   return {
-    session: { ...publicSession(session), petos: playerName(session.petos_player_id), balones: playerName(session.balones_player_id) },
+    session: { ...publicSession(session), petos: await playerName(session.petos_player_id), balones: await playerName(session.balones_player_id) },
     previous: list.previous ? { id: list.previous.id, date: list.previous.date } : null,
     titulares: list.entries.filter((e) => e.role === 'titular'),
     reservas: list.entries.filter((e) => e.role === 'reserva'),
@@ -99,8 +97,15 @@ function listPayload(session, ctx) {
 }
 
 function currentSession() {
-  return db.prepare('SELECT * FROM sessions WHERE cancelled = 0 AND date >= ? ORDER BY date LIMIT 1')
-    .get(L.todayMadrid());
+  return db.get('SELECT * FROM sessions WHERE cancelled = 0 AND date >= $1 ORDER BY date LIMIT 1', [L.todayMadrid()]);
+}
+
+async function sessionFlags(s) {
+  const r = await db.get(`SELECT
+    (SELECT COUNT(*)::int FROM responses WHERE session_id = $1 AND answer = 'yes') AS yes_count,
+    EXISTS (SELECT 1 FROM attendance WHERE session_id = $1) AS attendance_taken,
+    EXISTS (SELECT 1 FROM matches WHERE session_id = $1) AS has_results`, [s.id]);
+  return { ...publicSession(s), ...r };
 }
 
 function whatsappText(payload) {
@@ -121,15 +126,15 @@ function whatsappText(payload) {
   return lines.join('\n');
 }
 
-function resultsPayload(sessionId) {
-  const teams = db.prepare('SELECT * FROM teams WHERE session_id = ? ORDER BY id').all(sessionId).map((t) => ({
-    ...t,
-    players: db.prepare(`SELECT p.id, p.name FROM team_players tp JOIN players p ON p.id = tp.player_id
-      WHERE tp.team_id = ? ORDER BY p.name`).all(t.id),
-  }));
-  const matches = db.prepare('SELECT * FROM matches WHERE session_id = ? ORDER BY id').all(sessionId);
-  const stats = db.prepare(`SELECT ps.*, p.name FROM player_stats ps JOIN players p ON p.id = ps.player_id
-    WHERE ps.session_id = ? ORDER BY ps.goals DESC, ps.assists DESC, p.name`).all(sessionId);
+async function resultsPayload(sessionId) {
+  const teams = await db.all('SELECT * FROM teams WHERE session_id = $1 ORDER BY id', [sessionId]);
+  for (const t of teams) {
+    t.players = await db.all(`SELECT p.id, p.name FROM team_players tp JOIN players p ON p.id = tp.player_id
+      WHERE tp.team_id = $1 ORDER BY p.name`, [t.id]);
+  }
+  const matches = await db.all('SELECT * FROM matches WHERE session_id = $1 ORDER BY id', [sessionId]);
+  const stats = await db.all(`SELECT ps.*, p.name FROM player_stats ps JOIN players p ON p.id = ps.player_id
+    WHERE ps.session_id = $1 ORDER BY ps.goals DESC, ps.assists DESC, p.name`, [sessionId]);
   // Tabla del día por equipo
   const table = teams.map((t) => ({ team_id: t.id, name: t.name, color: t.color, pj: 0, w: 0, d: 0, l: 0, gf: 0, gc: 0, pts: 0 }));
   const byId = new Map(table.map((r) => [r.team_id, r]));
@@ -142,38 +147,37 @@ function resultsPayload(sessionId) {
     else { h.d++; a.d++; h.pts++; a.pts++; }
   }
   table.sort((x, y) => y.pts - x.pts || (y.gf - y.gc) - (x.gf - x.gc) || y.gf - x.gf);
-  const notes = db.prepare('SELECT results_notes FROM sessions WHERE id = ?').get(sessionId)?.results_notes || '';
+  const notes = (await db.get('SELECT results_notes FROM sessions WHERE id = $1', [sessionId]))?.results_notes || '';
   return { teams, matches, stats, table, notes };
 }
 
 // ---------- API: jugador ----------
 
-app.get('/api/me', requirePlayer, wrap((req) => {
+app.get('/api/me', requirePlayer, wrap(async (req) => {
   const p = req.player;
-  const s = currentSession();
-  const counts = L.seriousCounts();
+  const s = await currentSession();
+  const counts = await L.seriousCounts();
+  const infractions = await db.all(`SELECT i.id, i.type, i.status, i.note, s.date FROM infractions i JOIN sessions s ON s.id = i.session_id
+    WHERE i.player_id = $1 ORDER BY s.date DESC`, [p.id]);
   const out = {
     player: { id: p.id, name: p.name, is_coordinator: !!p.is_coordinator, active: !!p.active },
     expelled: (counts.get(p.id) || 0) >= L.SERIOUS_LIMIT,
     serious_infractions: counts.get(p.id) || 0,
-    infractions: db.prepare(`SELECT i.id, i.type, i.status, i.note, s.date FROM infractions i JOIN sessions s ON s.id = i.session_id
-      WHERE i.player_id = ? ORDER BY s.date DESC`).all(p.id)
-      .map((i) => ({ ...i, label: L.INFRACTION_TYPES[i.type]?.label || i.type, weeks: L.INFRACTION_TYPES[i.type]?.weeks })),
+    infractions: infractions.map((i) => ({ ...i, label: L.INFRACTION_TYPES[i.type]?.label || i.type, weeks: L.INFRACTION_TYPES[i.type]?.weeks })),
     session: null,
   };
   if (s) {
-    const ctx = L.newCtx();
-    const payload = listPayload(s, ctx);
-    const resp = db.prepare('SELECT * FROM responses WHERE session_id = ? AND player_id = ?').get(s.id, p.id);
+    const payload = await listPayload(s, L.newCtx());
+    const resp = await db.get('SELECT * FROM responses WHERE session_id = $1 AND player_id = $2', [s.id, p.id]);
     const mine = [...payload.titulares, ...payload.reservas].find((e) => e.player_id === p.id) || null;
     out.session = { ...payload, my_response: resp ? resp.answer : null, my_entry: mine };
   }
   return out;
 }));
 
-app.put('/api/sessions/:id/response', requirePlayer, wrap((req) => {
+app.put('/api/sessions/:id/response', requirePlayer, wrap(async (req) => {
   const p = req.player;
-  const s = sessionOr404(req.params.id);
+  const s = await sessionOr404(req.params.id);
   const { answer, notified = false, reason = '' } = req.body || {};
   if (!['yes', 'no'].includes(answer)) throw new HttpError(400, 'Respuesta no válida');
   if (s.cancelled) throw new HttpError(400, 'Este entrenamiento está cancelado');
@@ -181,38 +185,39 @@ app.put('/api/sessions/:id/response', requirePlayer, wrap((req) => {
   const now = new Date();
   if (now >= t.startsAt) throw new HttpError(400, 'El entrenamiento ya ha empezado');
 
-  const existing = db.prepare('SELECT * FROM responses WHERE session_id = ? AND player_id = ?').get(s.id, p.id);
+  const existing = await db.get('SELECT * FROM responses WHERE session_id = $1 AND player_id = $2', [s.id, p.id]);
   let infraction = null;
 
   if (answer === 'yes') {
     if (!p.active) throw new HttpError(403, 'Tu inscripción no está activa. Habla con Coordinación.');
-    if (L.isExpelled(p.id)) throw new HttpError(403, 'Tienes dos faltas graves esta temporada. Habla con Coordinación.');
+    if (await L.isExpelled(p.id)) throw new HttpError(403, 'Tienes dos faltas graves esta temporada. Habla con Coordinación.');
     if (now < t.opensAt) throw new HttpError(400, 'La convocatoria se abre el domingo a las 17:00');
     if (existing?.answer === 'yes') return { ok: true };
-    db.prepare(`INSERT INTO responses (session_id, player_id, answer, signed_up_at, updated_at)
-      VALUES (?, ?, 'yes', ?, ?)
-      ON CONFLICT(session_id, player_id) DO UPDATE SET answer = 'yes', signed_up_at = excluded.signed_up_at,
-        updated_at = excluded.updated_at, cancel_reason = NULL, cancel_notified = NULL, locked_rank = NULL, locked_priority = NULL, added_by_admin = 0`)
-      .run(s.id, p.id, nowIso(), nowIso());
+    await db.run(`INSERT INTO responses (session_id, player_id, answer, signed_up_at, updated_at)
+      VALUES ($1, $2, 'yes', $3, $3)
+      ON CONFLICT (session_id, player_id) DO UPDATE SET answer = 'yes', signed_up_at = excluded.signed_up_at,
+        updated_at = excluded.updated_at, cancel_reason = NULL, cancel_notified = NULL, locked_rank = NULL, locked_priority = NULL, added_by_admin = 0`,
+    [s.id, p.id, nowIso()]);
   } else {
-    tx(() => {
-      if (existing?.answer === 'yes') {
-        const entry = L.computeList(s).entries.find((e) => e.player_id === p.id);
-        const type = L.cancellationInfraction(s, { role: entry?.role, notified: !!notified, now });
-        if (type) {
-          const note = [reason && `Motivo: ${reason}`, notified ? 'Dice que avisó al coordinador' : 'No avisó al coordinador',
-            entry && `Estaba en ${entry.role === 'titular' ? 'titulares' : 'reservas'} (puesto ${entry.position})`]
-            .filter(Boolean).join(' · ');
-          db.prepare(`INSERT INTO infractions (session_id, player_id, type, status, source, note) VALUES (?, ?, ?, 'pending', 'auto', ?)`)
-            .run(s.id, p.id, type, note);
-          infraction = { type, label: L.INFRACTION_TYPES[type].label };
-        }
+    let type = null, note = null;
+    if (existing?.answer === 'yes') {
+      const entry = (await L.computeList(s)).entries.find((e) => e.player_id === p.id);
+      type = L.cancellationInfraction(s, { role: entry?.role, notified: !!notified, now });
+      note = [reason && `Motivo: ${reason}`, notified ? 'Dice que avisó al coordinador' : 'No avisó al coordinador',
+        entry && `Estaba en ${entry.role === 'titular' ? 'titulares' : 'reservas'} (puesto ${entry.position})`]
+        .filter(Boolean).join(' · ');
+    }
+    await tx(async (c) => {
+      if (type) {
+        await c.run(`INSERT INTO infractions (session_id, player_id, type, status, source, note) VALUES ($1, $2, $3, 'pending', 'auto', $4)`,
+          [s.id, p.id, type, note]);
+        infraction = { type, label: L.INFRACTION_TYPES[type].label };
       }
-      db.prepare(`INSERT INTO responses (session_id, player_id, answer, signed_up_at, updated_at, cancel_reason, cancel_notified)
-        VALUES (?, ?, 'no', NULL, ?, ?, ?)
-        ON CONFLICT(session_id, player_id) DO UPDATE SET answer = 'no', signed_up_at = NULL, updated_at = excluded.updated_at,
-          cancel_reason = excluded.cancel_reason, cancel_notified = excluded.cancel_notified, locked_rank = NULL, locked_priority = NULL`)
-        .run(s.id, p.id, nowIso(), reason || null, notified ? 1 : 0);
+      await c.run(`INSERT INTO responses (session_id, player_id, answer, signed_up_at, updated_at, cancel_reason, cancel_notified)
+        VALUES ($1, $2, 'no', NULL, $3, $4, $5)
+        ON CONFLICT (session_id, player_id) DO UPDATE SET answer = 'no', signed_up_at = NULL, updated_at = excluded.updated_at,
+          cancel_reason = excluded.cancel_reason, cancel_notified = excluded.cancel_notified, locked_rank = NULL, locked_priority = NULL`,
+      [s.id, p.id, nowIso(), reason || null, notified ? 1 : 0]);
     });
   }
   return { ok: true, infraction };
@@ -220,24 +225,21 @@ app.put('/api/sessions/:id/response', requirePlayer, wrap((req) => {
 
 // ---------- API: compartida (jugadores y coordinación) ----------
 
-app.get('/api/sessions/:id/list', requireAny, wrap((req) => listPayload(sessionOr404(req.params.id), L.newCtx())));
+app.get('/api/sessions/:id/list', requireAny, wrap(async (req) => listPayload(await sessionOr404(req.params.id), L.newCtx())));
 
-app.get('/api/sessions', requireAny, wrap(() => {
-  return db.prepare('SELECT * FROM sessions ORDER BY date DESC').all().map((s) => ({
-    ...publicSession(s),
-    has_results: !!db.prepare('SELECT 1 FROM matches WHERE session_id = ? LIMIT 1').get(s.id),
-    yes_count: db.prepare(`SELECT COUNT(*) c FROM responses WHERE session_id = ? AND answer = 'yes'`).get(s.id).c,
-  }));
+app.get('/api/sessions', requireAny, wrap(async () => {
+  const sessions = await db.all('SELECT * FROM sessions ORDER BY date DESC');
+  return Promise.all(sessions.map(sessionFlags));
 }));
 
-app.get('/api/sessions/:id/results', requireAny, wrap((req) => {
-  const s = sessionOr404(req.params.id);
-  return { session: publicSession(s), ...resultsPayload(s.id) };
+app.get('/api/sessions/:id/results', requireAny, wrap(async (req) => {
+  const s = await sessionOr404(req.params.id);
+  return { session: publicSession(s), ...(await resultsPayload(s.id)) };
 }));
 
-app.get('/api/stats', requireAny, wrap((req) => ({
+app.get('/api/stats', requireAny, wrap(async (req) => ({
   min_per_quarter: L.MIN_ATTENDANCE_PER_QUARTER,
-  players: L.seasonStats().filter((p) => p.active || req.admin),
+  players: (await L.seasonStats()).filter((p) => p.active || req.admin),
 })));
 
 app.get('/api/rules', wrap(() => ({ infraction_types: L.INFRACTION_TYPES, attendance_statuses: L.ATTENDANCE_STATUSES })));
@@ -255,159 +257,156 @@ app.post('/api/admin/login', wrap((req) => {
 const admin = express.Router();
 admin.use(requireAdmin);
 
-admin.get('/overview', wrap(() => {
-  const sessions = db.prepare('SELECT * FROM sessions ORDER BY date DESC').all().map((s) => ({
-    ...publicSession(s),
-    yes_count: db.prepare(`SELECT COUNT(*) c FROM responses WHERE session_id = ? AND answer = 'yes'`).get(s.id).c,
-    attendance_taken: !!db.prepare('SELECT 1 FROM attendance WHERE session_id = ? LIMIT 1').get(s.id),
-    has_results: !!db.prepare('SELECT 1 FROM matches WHERE session_id = ? LIMIT 1').get(s.id),
-  }));
-  const cur = currentSession();
+admin.get('/overview', wrap(async () => {
+  const sessions = await Promise.all((await db.all('SELECT * FROM sessions ORDER BY date DESC')).map(sessionFlags));
+  const cur = await currentSession();
   return {
     sessions,
     current_id: cur?.id || null,
     next_wednesday: L.nextWednesday(),
-    pending_infractions: db.prepare(`SELECT COUNT(*) c FROM infractions WHERE status = 'pending'`).get().c,
+    pending_infractions: (await db.get(`SELECT COUNT(*)::int c FROM infractions WHERE status = 'pending'`)).c,
   };
 }));
 
 // Jugadores
-admin.get('/players', wrap(() => {
-  const counts = L.seriousCounts();
-  return db.prepare('SELECT * FROM players ORDER BY active DESC, name').all().map((p) => ({
+admin.get('/players', wrap(async () => {
+  const counts = await L.seriousCounts();
+  return (await db.all('SELECT * FROM players ORDER BY active DESC, name')).map((p) => ({
     ...p, serious_infractions: counts.get(p.id) || 0, expelled: (counts.get(p.id) || 0) >= L.SERIOUS_LIMIT,
   }));
 }));
-admin.post('/players', wrap((req) => {
+admin.post('/players', wrap(async (req) => {
   const names = (Array.isArray(req.body.names) ? req.body.names : [req.body.name])
     .map((n) => String(n || '').trim()).filter(Boolean);
   if (!names.length) throw new HttpError(400, 'Falta el nombre');
-  const ins = db.prepare('INSERT INTO players (name, is_coordinator, token) VALUES (?, ?, ?)');
-  tx(() => names.forEach((n) => ins.run(n, req.body.is_coordinator ? 1 : 0, newToken())));
+  await tx(async (c) => {
+    for (const n of names) {
+      await c.run('INSERT INTO players (name, is_coordinator, token) VALUES ($1, $2, $3)', [n, req.body.is_coordinator ? 1 : 0, newToken()]);
+    }
+  });
   return { ok: true, created: names.length };
 }));
-admin.patch('/players/:id', wrap((req) => {
-  const fields = ['name', 'is_coordinator', 'active', 'attendance_exempt', 'exempt_note'];
-  for (const f of fields) {
+admin.patch('/players/:id', wrap(async (req) => {
+  for (const f of ['name', 'is_coordinator', 'active', 'attendance_exempt', 'exempt_note']) {
     if (f in req.body) {
       let v = req.body[f];
       if (typeof v === 'boolean') v = v ? 1 : 0;
-      db.prepare(`UPDATE players SET ${f} = ? WHERE id = ?`).run(v, Number(req.params.id));
+      await db.run(`UPDATE players SET ${f} = $1 WHERE id = $2`, [v, Number(req.params.id)]);
     }
   }
   return { ok: true };
 }));
-admin.post('/players/:id/token', wrap((req) => {
-  db.prepare('UPDATE players SET token = ? WHERE id = ?').run(newToken(), Number(req.params.id));
+admin.post('/players/:id/token', wrap(async (req) => {
+  await db.run('UPDATE players SET token = $1 WHERE id = $2', [newToken(), Number(req.params.id)]);
   return { ok: true };
 }));
 
 // Entrenamientos
-admin.post('/sessions', wrap((req) => {
+admin.post('/sessions', wrap(async (req) => {
   const { date, capacity = 16, start_time = '22:00', location, notes } = req.body || {};
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) throw new HttpError(400, 'Fecha no válida');
-  if (db.prepare('SELECT 1 FROM sessions WHERE date = ?').get(date)) throw new HttpError(400, 'Ya hay un entrenamiento ese día');
-  const r = db.prepare(`INSERT INTO sessions (date, capacity, start_time, location, notes)
-    VALUES (?, ?, ?, COALESCE(?, 'Polideportivo Marqués de Samaranch'), ?)`)
-    .run(date, Number(capacity), start_time, location || null, notes || null);
-  return { id: Number(r.lastInsertRowid) };
+  if (await db.get('SELECT 1 FROM sessions WHERE date = $1', [date])) throw new HttpError(400, 'Ya hay un entrenamiento ese día');
+  const r = await db.get(`INSERT INTO sessions (date, capacity, start_time, location, notes)
+    VALUES ($1, $2, $3, COALESCE($4, 'Polideportivo Marqués de Samaranch'), $5) RETURNING id`,
+  [date, Number(capacity), start_time, location || null, notes || null]);
+  return { id: r.id };
 }));
 
-admin.get('/sessions/:id', wrap((req) => {
-  const s = sessionOr404(req.params.id);
-  const ctx = L.newCtx();
-  const payload = listPayload(s, ctx);
-  const answered = new Set(db.prepare('SELECT player_id FROM responses WHERE session_id = ?').all(s.id).map((r) => r.player_id));
+admin.get('/sessions/:id', wrap(async (req) => {
+  const s = await sessionOr404(req.params.id);
+  const payload = await listPayload(s, L.newCtx());
+  const answered = new Set((await db.all('SELECT player_id FROM responses WHERE session_id = $1', [s.id])).map((r) => r.player_id));
   return {
     ...payload,
     whatsapp: whatsappText(payload),
-    sin_responder: db.prepare('SELECT id, name FROM players WHERE active = 1 ORDER BY name').all().filter((p) => !answered.has(p.id)),
-    attendance: db.prepare('SELECT player_id, status FROM attendance WHERE session_id = ?').all(s.id),
-    infractions: db.prepare(`SELECT i.*, p.name FROM infractions i JOIN players p ON p.id = i.player_id
-      WHERE i.session_id = ? ORDER BY i.created_at`).all(s.id),
-    results: resultsPayload(s.id),
+    sin_responder: (await db.all('SELECT id, name FROM players WHERE active = 1 ORDER BY name')).filter((p) => !answered.has(p.id)),
+    attendance: await db.all('SELECT player_id, status FROM attendance WHERE session_id = $1', [s.id]),
+    infractions: await db.all(`SELECT i.*, p.name FROM infractions i JOIN players p ON p.id = i.player_id
+      WHERE i.session_id = $1 ORDER BY i.created_at`, [s.id]),
+    results: await resultsPayload(s.id),
   };
 }));
 
-admin.patch('/sessions/:id', wrap((req) => {
-  const s = sessionOr404(req.params.id);
+admin.patch('/sessions/:id', wrap(async (req) => {
+  const s = await sessionOr404(req.params.id);
   for (const f of ['capacity', 'start_time', 'location', 'notes', 'petos_player_id', 'balones_player_id', 'cancelled']) {
     if (f in req.body) {
       let v = req.body[f];
       if (typeof v === 'boolean') v = v ? 1 : 0;
       if (v === '') v = null;
-      db.prepare(`UPDATE sessions SET ${f} = ? WHERE id = ?`).run(v, s.id);
+      await db.run(`UPDATE sessions SET ${f} = $1 WHERE id = $2`, [v, s.id]);
     }
   }
   return { ok: true };
 }));
 
-admin.delete('/sessions/:id', wrap((req) => {
-  db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionOr404(req.params.id).id);
+admin.delete('/sessions/:id', wrap(async (req) => {
+  await db.run('DELETE FROM sessions WHERE id = $1', [(await sessionOr404(req.params.id)).id]);
   return { ok: true };
 }));
 
 // Lista final (lunes): congela el orden por prioridad + hora de inscripción
-admin.post('/sessions/:id/finalize', wrap((req) => {
-  const s = sessionOr404(req.params.id);
-  tx(() => {
-    db.prepare('UPDATE sessions SET finalized_at = NULL WHERE id = ?').run(s.id);
-    const fresh = L.getSession(s.id);
-    const list = L.computeList(fresh);
-    const upd = db.prepare('UPDATE responses SET locked_rank = ?, locked_priority = ? WHERE session_id = ? AND player_id = ?');
-    list.entries.forEach((e) => upd.run(e.position, e.priority, s.id, e.player_id));
-    db.prepare('UPDATE sessions SET finalized_at = ? WHERE id = ?').run(nowIso(), s.id);
+admin.post('/sessions/:id/finalize', wrap(async (req) => {
+  const s = await sessionOr404(req.params.id);
+  const list = await L.computeList({ ...s, finalized_at: null });
+  await tx(async (c) => {
+    await c.run('UPDATE responses SET locked_rank = NULL, locked_priority = NULL WHERE session_id = $1', [s.id]);
+    for (const e of list.entries) {
+      await c.run('UPDATE responses SET locked_rank = $1, locked_priority = $2 WHERE session_id = $3 AND player_id = $4',
+        [e.position, e.priority, s.id, e.player_id]);
+    }
+    await c.run('UPDATE sessions SET finalized_at = $1 WHERE id = $2', [nowIso(), s.id]);
   });
-  const payload = listPayload(L.getSession(s.id), L.newCtx());
+  const payload = await listPayload(await L.getSession(s.id), L.newCtx());
   return { ok: true, whatsapp: whatsappText(payload) };
 }));
-admin.post('/sessions/:id/unfinalize', wrap((req) => {
-  const s = sessionOr404(req.params.id);
-  tx(() => {
-    db.prepare('UPDATE sessions SET finalized_at = NULL WHERE id = ?').run(s.id);
-    db.prepare('UPDATE responses SET locked_rank = NULL, locked_priority = NULL WHERE session_id = ?').run(s.id);
+admin.post('/sessions/:id/unfinalize', wrap(async (req) => {
+  const s = await sessionOr404(req.params.id);
+  await tx(async (c) => {
+    await c.run('UPDATE sessions SET finalized_at = NULL WHERE id = $1', [s.id]);
+    await c.run('UPDATE responses SET locked_rank = NULL, locked_priority = NULL WHERE session_id = $1', [s.id]);
   });
   return { ok: true };
 }));
 
 // Coordinación apunta o borra a alguien sin generar incidencias
-admin.put('/sessions/:id/responses/:playerId', wrap((req) => {
-  const s = sessionOr404(req.params.id);
+admin.put('/sessions/:id/responses/:playerId', wrap(async (req) => {
+  const s = await sessionOr404(req.params.id);
   const pid = Number(req.params.playerId);
   const answer = req.body?.answer;
   if (answer === null) {
-    db.prepare('DELETE FROM responses WHERE session_id = ? AND player_id = ?').run(s.id, pid);
+    await db.run('DELETE FROM responses WHERE session_id = $1 AND player_id = $2', [s.id, pid]);
     return { ok: true };
   }
   if (!['yes', 'no'].includes(answer)) throw new HttpError(400, 'Respuesta no válida');
-  const existing = db.prepare('SELECT answer FROM responses WHERE session_id = ? AND player_id = ?').get(s.id, pid);
+  const existing = await db.get('SELECT answer FROM responses WHERE session_id = $1 AND player_id = $2', [s.id, pid]);
   if (existing?.answer === answer) return { ok: true };
-  db.prepare(`INSERT INTO responses (session_id, player_id, answer, signed_up_at, updated_at, added_by_admin)
-    VALUES (?, ?, ?, ?, ?, 1)
-    ON CONFLICT(session_id, player_id) DO UPDATE SET answer = excluded.answer, signed_up_at = excluded.signed_up_at,
-      updated_at = excluded.updated_at, added_by_admin = 1, locked_rank = NULL, locked_priority = NULL`)
-    .run(s.id, pid, answer, answer === 'yes' ? nowIso() : null, nowIso());
+  await db.run(`INSERT INTO responses (session_id, player_id, answer, signed_up_at, updated_at, added_by_admin)
+    VALUES ($1, $2, $3, $4, $5, 1)
+    ON CONFLICT (session_id, player_id) DO UPDATE SET answer = excluded.answer, signed_up_at = excluded.signed_up_at,
+      updated_at = excluded.updated_at, added_by_admin = 1, locked_rank = NULL, locked_priority = NULL`,
+  [s.id, pid, answer, answer === 'yes' ? nowIso() : null, nowIso()]);
   return { ok: true };
 }));
 
 // Asistencia: llegar tarde / no presentarse generan la incidencia correspondiente
-admin.put('/sessions/:id/attendance', wrap((req) => {
-  const s = sessionOr404(req.params.id);
+admin.put('/sessions/:id/attendance', wrap(async (req) => {
+  const s = await sessionOr404(req.params.id);
   const items = Array.isArray(req.body?.items) ? req.body.items : [];
-  tx(() => {
-    const kept = new Map(db.prepare(`SELECT player_id, type, status, note FROM infractions
-      WHERE session_id = ? AND source = 'attendance'`).all(s.id).map((r) => [`${r.player_id}:${r.type}`, r]));
-    db.prepare('DELETE FROM attendance WHERE session_id = ?').run(s.id);
-    db.prepare(`DELETE FROM infractions WHERE session_id = ? AND source = 'attendance'`).run(s.id);
-    const insA = db.prepare('INSERT INTO attendance (session_id, player_id, status) VALUES (?, ?, ?)');
-    const insI = db.prepare(`INSERT INTO infractions (session_id, player_id, type, status, source, note) VALUES (?, ?, ?, ?, 'attendance', ?)`);
+  await tx(async (c) => {
+    const kept = new Map((await c.all(`SELECT player_id, type, status, note FROM infractions
+      WHERE session_id = $1 AND source = 'attendance'`, [s.id])).map((r) => [`${r.player_id}:${r.type}`, r]));
+    await c.run('DELETE FROM attendance WHERE session_id = $1', [s.id]);
+    await c.run(`DELETE FROM infractions WHERE session_id = $1 AND source = 'attendance'`, [s.id]);
     for (const it of items) {
       if (!L.ATTENDANCE_STATUSES[it.status]) continue;
-      insA.run(s.id, Number(it.player_id), it.status);
+      await c.run('INSERT INTO attendance (session_id, player_id, status) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
+        [s.id, Number(it.player_id), it.status]);
       const type = it.status === 'late' ? 'late_arrival' : it.status === 'no_show' ? 'no_show' : null;
       if (type) {
         const prev = kept.get(`${it.player_id}:${type}`);
-        insI.run(s.id, Number(it.player_id), type, prev?.status || 'confirmed', prev?.note || null);
+        await c.run(`INSERT INTO infractions (session_id, player_id, type, status, source, note) VALUES ($1, $2, $3, $4, 'attendance', $5)`,
+          [s.id, Number(it.player_id), type, prev?.status || 'confirmed', prev?.note || null]);
       }
     }
   });
@@ -415,60 +414,65 @@ admin.put('/sessions/:id/attendance', wrap((req) => {
 }));
 
 // Incidencias
-admin.get('/infractions', wrap(() => {
-  return db.prepare(`SELECT i.*, p.name, s.date FROM infractions i
+admin.get('/infractions', wrap(async () => {
+  return (await db.all(`SELECT i.*, p.name, s.date FROM infractions i
     JOIN players p ON p.id = i.player_id JOIN sessions s ON s.id = i.session_id
-    ORDER BY (i.status = 'pending') DESC, s.date DESC, i.created_at DESC`).all()
+    ORDER BY (i.status = 'pending') DESC, s.date DESC, i.created_at DESC`))
     .map((i) => ({ ...i, label: L.INFRACTION_TYPES[i.type]?.label || i.type, ...L.INFRACTION_TYPES[i.type] }));
 }));
-admin.post('/infractions', wrap((req) => {
+admin.post('/infractions', wrap(async (req) => {
   const { session_id, player_id, type, note } = req.body || {};
-  sessionOr404(session_id);
+  await sessionOr404(session_id);
   if (!L.INFRACTION_TYPES[type]) throw new HttpError(400, 'Tipo de incidencia no válido');
-  db.prepare(`INSERT INTO infractions (session_id, player_id, type, status, source, note) VALUES (?, ?, ?, 'confirmed', 'manual', ?)`)
-    .run(Number(session_id), Number(player_id), type, note || null);
+  await db.run(`INSERT INTO infractions (session_id, player_id, type, status, source, note) VALUES ($1, $2, $3, 'confirmed', 'manual', $4)`,
+    [Number(session_id), Number(player_id), type, note || null]);
   return { ok: true };
 }));
-admin.patch('/infractions/:id', wrap((req) => {
+admin.patch('/infractions/:id', wrap(async (req) => {
   const { status, note, type } = req.body || {};
+  const id = Number(req.params.id);
   if (status && !['pending', 'confirmed', 'justified'].includes(status)) throw new HttpError(400, 'Estado no válido');
   if (type && !L.INFRACTION_TYPES[type]) throw new HttpError(400, 'Tipo no válido');
-  if (status) db.prepare('UPDATE infractions SET status = ? WHERE id = ?').run(status, Number(req.params.id));
-  if (note !== undefined) db.prepare('UPDATE infractions SET note = ? WHERE id = ?').run(note, Number(req.params.id));
-  if (type) db.prepare('UPDATE infractions SET type = ? WHERE id = ?').run(type, Number(req.params.id));
+  if (status) await db.run('UPDATE infractions SET status = $1 WHERE id = $2', [status, id]);
+  if (note !== undefined) await db.run('UPDATE infractions SET note = $1 WHERE id = $2', [note, id]);
+  if (type) await db.run('UPDATE infractions SET type = $1 WHERE id = $2', [type, id]);
   return { ok: true };
 }));
-admin.delete('/infractions/:id', wrap((req) => {
-  db.prepare('DELETE FROM infractions WHERE id = ?').run(Number(req.params.id));
+admin.delete('/infractions/:id', wrap(async (req) => {
+  await db.run('DELETE FROM infractions WHERE id = $1', [Number(req.params.id)]);
   return { ok: true };
 }));
 
 // Resultados del entrenamiento: equipos, partidos y estadísticas individuales
-admin.put('/sessions/:id/results', wrap((req) => {
-  const s = sessionOr404(req.params.id);
+admin.put('/sessions/:id/results', wrap(async (req) => {
+  const s = await sessionOr404(req.params.id);
   const { teams = [], matches = [], stats = [], notes = '' } = req.body || {};
-  tx(() => {
-    db.prepare('DELETE FROM teams WHERE session_id = ?').run(s.id); // cascada: team_players, matches
-    db.prepare('DELETE FROM player_stats WHERE session_id = ?').run(s.id);
-    const ids = teams.map((t) => {
-      const r = db.prepare('INSERT INTO teams (session_id, name, color) VALUES (?, ?, ?)')
-        .run(s.id, String(t.name || 'Equipo'), t.color || null);
-      const tid = Number(r.lastInsertRowid);
-      for (const pid of new Set(t.player_ids || [])) db.prepare('INSERT INTO team_players (team_id, player_id) VALUES (?, ?)').run(tid, Number(pid));
-      return tid;
-    });
+  await tx(async (c) => {
+    await c.run('DELETE FROM teams WHERE session_id = $1', [s.id]); // cascada: team_players, matches
+    await c.run('DELETE FROM player_stats WHERE session_id = $1', [s.id]);
+    const ids = [];
+    for (const t of teams) {
+      const { id: tid } = await c.get('INSERT INTO teams (session_id, name, color) VALUES ($1, $2, $3) RETURNING id',
+        [s.id, String(t.name || 'Equipo'), t.color || null]);
+      for (const pid of new Set(t.player_ids || [])) {
+        await c.run('INSERT INTO team_players (team_id, player_id) VALUES ($1, $2)', [tid, Number(pid)]);
+      }
+      ids.push(tid);
+    }
     for (const m of matches) {
       const h = ids[m.home], a = ids[m.away];
       if (h == null || a == null || h === a) continue;
-      db.prepare('INSERT INTO matches (session_id, home_team_id, away_team_id, home_goals, away_goals) VALUES (?, ?, ?, ?, ?)')
-        .run(s.id, h, a, Math.max(0, Number(m.home_goals) || 0), Math.max(0, Number(m.away_goals) || 0));
+      await c.run('INSERT INTO matches (session_id, home_team_id, away_team_id, home_goals, away_goals) VALUES ($1, $2, $3, $4, $5)',
+        [s.id, h, a, Math.max(0, Number(m.home_goals) || 0), Math.max(0, Number(m.away_goals) || 0)]);
     }
-    const insS = db.prepare('INSERT INTO player_stats (session_id, player_id, goals, assists, saves, mvp) VALUES (?, ?, ?, ?, ?, ?)');
     for (const st of stats) {
       const g = Number(st.goals) || 0, a = Number(st.assists) || 0, sv = Number(st.saves) || 0, mvp = st.mvp ? 1 : 0;
-      if (g || a || sv || mvp) insS.run(s.id, Number(st.player_id), g, a, sv, mvp);
+      if (g || a || sv || mvp) {
+        await c.run('INSERT INTO player_stats (session_id, player_id, goals, assists, saves, mvp) VALUES ($1, $2, $3, $4, $5, $6)',
+          [s.id, Number(st.player_id), g, a, sv, mvp]);
+      }
     }
-    db.prepare('UPDATE sessions SET results_notes = ? WHERE id = ?').run(notes || null, s.id);
+    await c.run('UPDATE sessions SET results_notes = $1 WHERE id = $2', [notes || null, s.id]);
   });
   return { ok: true };
 }));
@@ -484,8 +488,18 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: status >= 500 ? 'Error interno' : err.message });
 });
 
-if (require.main === module) {
-  app.listen(PORT, () => console.log(`Fútbol 7 · convocatorias en http://localhost:${PORT}`));
+async function start(port = PORT) {
+  await init();
+  return new Promise((resolve) => {
+    const server = app.listen(port, () => {
+      console.log(`Fútbol 7 · convocatorias en http://localhost:${port}`);
+      resolve(server);
+    });
+  });
 }
 
-module.exports = app;
+if (require.main === module) {
+  start().catch((e) => { console.error('No se pudo arrancar:', e.message); process.exit(1); });
+}
+
+module.exports = { app, start };

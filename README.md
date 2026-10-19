@@ -49,36 +49,49 @@ Solo cuentan las incidencias **confirmadas**; las marcadas como justificadas no 
 
 La clasificación muestra los entrenos del trimestre frente al mínimo de 4 (quedarse fuera por lista llena cuenta a favor).
 
-## Ponerlo en marcha
+## Arquitectura
 
-Requiere Node.js 22.13 o superior (usa la base de datos SQLite integrada en Node, sin instalar nada más).
+- **Render** (plan gratuito) ejecuta la web: servidor Node/Express en [src/server.js](src/server.js).
+- **Supabase** (plan gratuito) guarda los datos en Postgres. Las tablas se crean solas al arrancar
+  ([src/db.js](src/db.js)) con RLS activado, así que la API pública de Supabase no puede leerlas.
+
+## Publicarla (Supabase + Render)
+
+1. **Supabase**: crea un proyecto (región Europa). En *Connect → Session pooler* copia la cadena de conexión
+   (`postgresql://postgres.xxxx:[TU-CONTRASEÑA]@aws-0-eu-....pooler.supabase.com:5432/postgres`) y pon tu contraseña.
+   Usa el *Session pooler*: la conexión directa es solo IPv6 y Render no la alcanza.
+2. **Render**: el servicio está descrito en [render.yaml](render.yaml). En *Environment* añade:
+   - `DATABASE_URL` = la cadena de Supabase
+   - `ADMIN_PASSWORD` = la contraseña de coordinación
+3. Abre la web, entra en **Coordinación → Jugadores**, pega los nombres (uno por línea) y envía a cada persona su enlace.
+
+El plan gratuito de Render «duerme» el servicio tras 15 minutos sin visitas: la primera visita tarda unos 30–50 segundos.
+Supabase pausa los proyectos gratuitos tras una semana sin actividad (con el uso semanal no debería pasar).
+
+## Desarrollo en local
+
+Requiere Node.js 20 o superior. No hace falta instalar Postgres: la demo y los tests usan uno embebido.
 
 ```bash
 npm install
 ```
 
+Demo con datos ficticios en http://localhost:3000 (contraseña de coordinación: `cambiame`):
+
 ```bash
-ADMIN_PASSWORD=una-contraseña-segura npm start
+npm run demo
 ```
 
-La web queda en http://localhost:3000. Los datos se guardan en `data/futbol7.db` (cópialo para hacer copias de seguridad).
+Contra una base de datos real (por ejemplo Supabase):
+
+```bash
+DATABASE_URL=postgresql://... ADMIN_PASSWORD=una-contraseña-segura npm start
+```
 
 Para crear al equipo de coordinación de la presentación:
 
 ```bash
-npm run seed
-```
-
-Después, desde **Coordinación → Jugadores**, pega los nombres de la sección (uno por línea) y envía a cada persona su enlace.
-
-### Demo con datos ficticios
-
-```bash
-DB_PATH=data/demo.db npm run seed -- --demo
-```
-
-```bash
-node scripts/dev-demo.js
+DATABASE_URL=postgresql://... npm run seed
 ```
 
 ### Tests
@@ -86,8 +99,3 @@ node scripts/dev-demo.js
 ```bash
 npm test
 ```
-
-### Publicarla en internet
-
-Cualquier servicio que ejecute Node con disco persistente sirve (Render, Railway, Fly.io, un VPS…).
-Configura las variables `ADMIN_PASSWORD`, `PORT` (si el servicio lo pide) y `DB_PATH` apuntando a un volumen persistente.

@@ -133,7 +133,7 @@ label { display: inline-flex; align-items: center; gap: .4rem; }
 }
 .list li:last-child { border-bottom: none; }
 .list .pos { width: 1.8rem; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
-.list .name { flex: 1; min-width: 0; }
+.list .name { flex: 1 1 12rem; min-width: 0; }
 .list .name small { display: block; color: var(--muted); font-size: .78rem; }
 .list li.me { background: var(--accent-soft); border-radius: 8px; padding-left: .4rem; padding-right: .4rem; }
 .divider { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 700; margin: 1rem 0 .25rem; }
