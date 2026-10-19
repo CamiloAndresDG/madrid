@@ -91,6 +91,9 @@ CREATE TABLE IF NOT EXISTS responses (
   locked_rank INTEGER,                       -- orden congelado al generar la lista final
   locked_priority INTEGER,
   added_by_admin INTEGER NOT NULL DEFAULT 0,
+  called_up INTEGER NOT NULL DEFAULT 0 CHECK (called_up IN (0,1)),   -- reserva convocada como cambio
+  called_up_by INTEGER REFERENCES players(id) ON DELETE SET NULL,
+  called_up_at TEXT,
   PRIMARY KEY (session_id, player_id)
 );
 
@@ -154,7 +157,7 @@ CREATE TABLE IF NOT EXISTS equipment (
   active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
   created_at TEXT NOT NULL DEFAULT ${NOW}
 );
-INSERT INTO equipment (name) VALUES ('Petos amarillos'), ('Petos naranjas'), ('Balones') ON CONFLICT (name) DO NOTHING;
+INSERT INTO equipment (name) VALUES ('Petos amarillos'), ('Petos naranjas'), ('Petos azules'), ('Balones') ON CONFLICT (name) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS equipment_assignments (
   id SERIAL PRIMARY KEY,
@@ -163,7 +166,8 @@ CREATE TABLE IF NOT EXISTS equipment_assignments (
   session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
   assigned_by INTEGER REFERENCES players(id) ON DELETE SET NULL,
   assigned_at TEXT NOT NULL,
-  note TEXT
+  note TEXT,
+  batch TEXT                                 -- filas de una misma entrega (varias personas)
 );
 CREATE INDEX IF NOT EXISTS idx_equipment_assignments_item ON equipment_assignments(equipment_id, assigned_at DESC);
 
@@ -214,11 +218,30 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- Avisos para cada jugador (entra en la convocatoria, pasa a reserva, hay triangular…)
+CREATE TABLE IF NOT EXISTS notifications (
+  id SERIAL PRIMARY KEY,
+  player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+  kind TEXT NOT NULL,
+  message TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  read_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_player ON notifications(player_id, read_at);
+
+-- Columnas añadidas después: en bases ya creadas, se completan solas al arrancar
+ALTER TABLE responses ADD COLUMN IF NOT EXISTS called_up INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE responses ADD COLUMN IF NOT EXISTS called_up_by INTEGER REFERENCES players(id) ON DELETE SET NULL;
+ALTER TABLE responses ADD COLUMN IF NOT EXISTS called_up_at TEXT;
+ALTER TABLE equipment_assignments ADD COLUMN IF NOT EXISTS batch TEXT;
+UPDATE equipment_assignments SET batch = id::text WHERE batch IS NULL;
 `;
 
 const TABLES = ['players', 'roles', 'player_roles', 'auth_sessions', 'sessions', 'responses', 'attendance', 'infractions',
   'teams', 'team_players', 'matches', 'player_stats', 'equipment', 'equipment_assignments', 'audit_log',
-  'posts', 'post_images', 'settings'];
+  'posts', 'post_images', 'settings', 'notifications'];
 
 // Supabase expone las tablas de "public" por su API REST: activar RLS sin políticas
 // las cierra a esa API; el servidor entra como propietario de las tablas y no le afecta.

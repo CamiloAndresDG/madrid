@@ -92,6 +92,19 @@ function textDialog({ title, label, value = '', confirm = 'Guardar' }) {
 }
 
 const prioBadge = (p) => `<span class="prio prio-${p}" title="Prioridad ${p}">P${p}</span>`;
+// Iniciales con un tono estable por persona (el mismo nombre, el mismo color en toda la web)
+const nameInitials = (name) => String(name || '').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
+function avatar(name) {
+  let h = 0;
+  for (const c of String(name || '')) h = (h * 31 + c.codePointAt(0)) >>> 0;
+  return `<span class="avatar" data-tone="${h % 6}" aria-hidden="true">${esc(nameInitials(name))}</span>`;
+}
+// Días que faltan hasta una fecha AAAA-MM-DD, contados en hora de Madrid
+function daysUntil(dateStr) {
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date());
+  return Math.round((Date.parse(`${dateStr}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86400000);
+}
+const whenLabel = (n) => (n === 0 ? 'Hoy' : n === 1 ? 'Mañana' : n > 1 ? `En ${n} días` : n === -1 ? 'Ayer' : `Hace ${-n} días`);
 const PRIO_LEGEND = `<div class="prio-legend" aria-label="Prioridades">
   <span>${prioBadge(1)} No vino la semana pasada</span>
   <span>${prioBadge(2)} Sí vino</span>
@@ -185,7 +198,7 @@ function renderAccount() {
   const pl = S.me?.player;
   const initials = $accountBtn.querySelector('.account-initials');
   if (S.token && pl) {
-    initials.textContent = pl.name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
+    initials.textContent = nameInitials(pl.name);
     initials.hidden = false;
     $accountBtn.setAttribute('aria-label', `Cuenta de ${pl.name}`);
     $accountMenu.innerHTML = `<div class="account-head"><strong>${esc(pl.name)}</strong><span>${esc(pl.email || '')}</span></div>
@@ -363,13 +376,13 @@ async function homeForumHtml() {
 
 async function viewHome() {
   if (!S.token) {
-    $app.innerHTML = `<div class="page-head"><h1>Fútbol 7 · Gmadrid</h1></div>
-      <div class="card empty">
-        <h2>Apúntate a los entrenamientos de los miércoles</h2>
-        <p class="muted">Con tu cuenta confirmas si vienes, ves quién va y en qué equipo juegas.</p>
-        <div class="row" style="margin-top:1rem">
-          <a class="btn btn-primary" href="/registro">Crear cuenta</a>
-          <a class="btn" href="/entrar">Ya tengo cuenta</a></div></div>
+    $app.innerHTML = `<section class="hero hero-welcome" aria-labelledby="welcomeHead">
+        <img class="hero-logo" src="/icono-gmadrid.png" alt="" width="56" height="56">
+        <h1 class="hero-date" id="welcomeHead">Fútbol 7 · Gmadrid</h1>
+        <p class="hero-lead">Apúntate a los entrenamientos de los miércoles. Con tu cuenta confirmas si vienes, ves quién va y en qué equipo juegas.</p>
+        <div class="hero-actions">
+          <a class="btn btn-primary btn-big" href="/registro">Crear cuenta</a>
+          <a class="btn btn-quiet btn-big" href="/entrar">Ya tengo cuenta</a></div></section>
       ${teamInfoHtml()}
       <section class="home-section" aria-labelledby="homeForumTitle">
         <h2 id="homeForumTitle">Foro</h2>
@@ -393,6 +406,14 @@ async function viewHome() {
       Según las normas de la sección quedas fuera del equipo. Habla con Coordinación.</div></div>`;
   }
 
+  // Avisos: entras por el triangular, te convocan como cambio, pasas a reservas…
+  if (me.notifications?.length) {
+    html += me.notifications.map((n) => `<div class="status-box ${n.kind === 'demoted' ? 'warn' : 'ok'} notice" role="status">
+      ${icon(n.kind === 'demoted' ? 'wait' : 'check')}<div style="flex:1"><strong>${esc(n.message)}</strong>
+      <small class="muted">${esc(fmtDateTime(n.created_at))}</small></div>
+      <button class="btn-ghost btn-icon" data-act="readNotice" data-id="${n.id}" aria-label="Marcar como leído" title="Entendido">${icon('x')}</button></div>`).join('');
+  }
+
   if (!s) {
     html += `<div class="page-head"><h1>Convocatoria</h1></div>
       <div class="card empty"><h2>Todavía no hay convocatoria</h2>
@@ -402,28 +423,38 @@ async function viewHome() {
   }
 
   const sess = s.session;
-  const total = s.titulares.length + s.reservas.length;
+  const fmt = s.format;
+  const conv = s.titulares.length + s.cambios.length;
+  const total = conv + s.reservas.length;
   const mine = s.my_entry;
-  const ahead = mine && mine.role === 'reserva' ? mine.position - sess.capacity - 1 : 0;
+  const ahead = mine && mine.role === 'reserva' ? s.reservas.findIndex((e) => e.player_id === mine.player_id) : 0;
+  const nextHint = fmt.next && fmt.next.missing > 0 ? `Faltan ${fmt.next.missing} para ${fmt.next.label}.` : '';
   let status;
   if (sess.cancelled) {
     status = { cls: 'is-cancel', ic: 'x', title: 'Entrenamiento cancelado', text: 'Este miércoles no hay entreno.' };
   } else if (mine && mine.role === 'titular') {
-    status = { cls: 'is-in', ic: 'check', title: `Estás dentro · puesto ${mine.position} de ${sess.capacity}`, text: `${mine.reason}.` };
+    status = { cls: 'is-in', ic: 'check',
+      title: fmt.kind === 'triangular' ? `Convocado para el triangular · puesto ${mine.position}` : `Estás dentro · puesto ${mine.position} de ${fmt.cutoff}`,
+      text: fmt.kind === 'faltan' ? `${mine.reason}. ${fmt.label}: si no se llega a ${fmt.min}, no hay partido.` : `${mine.reason}.` };
+  } else if (mine && mine.role === 'cambio') {
+    status = { cls: 'is-in', ic: 'check', title: 'Convocado como cambio', text: 'Coordinación te ha llamado para entrar en los cambios. ¡Trae las botas!' };
   } else if (mine) {
     status = { cls: 'is-wait', ic: 'wait', title: ahead > 0 ? `Reserva · ${plural(ahead, 'persona', 'personas')} por delante` : 'Reserva · eres la siguiente persona en entrar',
-      text: 'Si alguien se borra, entras automáticamente.' };
+      text: fmt.kind === 'triangular'
+        ? 'Ya hay triangular: Coordinación decide si te convoca como cambio. Si alguien se borra, entras automáticamente.'
+        : `Si alguien se borra, entras automáticamente. Si llegamos a ${fmt.triangular_at}, hay triangular y entras.` };
   } else if (s.my_response === 'no') {
     status = { cls: 'is-out', ic: 'x', title: 'Has dicho que no vienes', text: 'Si cambias de idea, apúntate: entrarás según tu prioridad y la hora.' };
   } else if (!sess.is_open && !sess.has_started) {
     status = { cls: '', ic: 'lock', title: 'Inscripciones cerradas por ahora', text: `Se abren el ${fmtDateTime(sess.opens_at)}.` };
   } else {
-    status = { cls: '', ic: 'calendar', title: '¿Vienes este miércoles?', text: `Quedan ${plural(Math.max(0, sess.capacity - s.titulares.length), 'plaza', 'plazas')} de ${sess.capacity}.` };
+    status = { cls: '', ic: 'calendar', title: '¿Vienes este miércoles?',
+      text: fmt.kind === 'faltan' ? `${fmt.label}.` : `Ahora mismo: ${fmt.label.toLowerCase()}. ${nextHint}`.trim() };
   }
 
   const canYes = sess.is_open && !mine && !me.expelled;
   const canNo = !sess.has_started && !sess.cancelled && s.my_response !== 'no';
-  const myKit = (s.equipment || []).filter((e) => e.holder_id === me.player.id);
+  const myKit = (s.equipment || []).filter((e) => (e.holders || []).some((h) => h.id === me.player.id));
   const actionsHtml = canYes
     ? `<button class="btn btn-primary btn-big" data-act="answerYes" data-id="${sess.id}">Voy</button>
        ${canNo ? `<button class="btn btn-quiet btn-big" data-act="answerNo" data-id="${sess.id}">No puedo ir</button>` : ''}`
@@ -441,12 +472,24 @@ async function viewHome() {
       <div class="row"><button class="btn-primary" data-act="dismissIntro">Entendido</button><a class="btn btn-ghost" href="/normas">Ver todas las normas</a></div>
     </section>`;
   }
+  // El medidor avanza hacia el siguiente formato: 14 para jugar, 16 para 8 contra 8, 21 para triangular
+  const goal = fmt.next ? fmt.next.at : Math.max(conv, fmt.triangular_at);
+  const days = daysUntil(sess.date);
   html += `<section class="hero${joined ? ' just-joined' : ''}" aria-labelledby="heroDate">
+    <div class="hero-top">
+      <span class="hero-when${days === 0 ? ' is-today' : ''}">${esc(sess.cancelled ? 'Cancelado' : whenLabel(days))}</span>
+    </div>
     <h1 class="hero-date" id="heroDate">${esc(fmtDate(sess.date))}</h1>
     <div class="hero-meta">
       <span>${icon('clock')} ${esc(sess.start_time)} · llegada ${esc(sess.arrival_time || '21:45')}</span>
       <span>${icon('pin')} ${esc(sess.location)}</span>
     </div>
+    ${weatherHtml(s.weather)}
+    ${sess.cancelled ? '' : `<div class="hero-capacity">
+      <div class="hero-capacity-label"><span><strong>${conv}</strong> ${conv === 1 ? 'convocado' : 'convocados'} · ${esc(fmt.label)}</span>${s.reservas.length ? `<span>${plural(s.reservas.length, 'reserva', 'reservas')}</span>` : ''}</div>
+      <div class="hero-meter${fmt.kind === 'faltan' ? ' is-short' : ''}" role="meter" aria-label="Convocados" aria-valuemin="0" aria-valuemax="${goal}" aria-valuenow="${conv}"><span style="width:${pct(conv, goal)}%"></span></div>
+      ${nextHint && fmt.kind !== 'faltan' ? `<p class="hero-next">${esc(nextHint)}</p>` : ''}
+    </div>`}
     ${sess.notes ? `<p class="hero-notes">${esc(sess.notes)}</p>` : ''}
     <div class="hero-status ${status.cls}" aria-live="polite">${icon(status.ic)}
       <div><strong>${esc(status.title)}</strong><p>${esc(status.text)}</p></div></div>
@@ -456,18 +499,28 @@ async function viewHome() {
   </section>`;
 
   html += `<div class="card"><div class="row spread" style="margin-bottom:.5rem"><h2 style="margin:0">Quién va · ${total}</h2>
-      <span class="chip">${sess.finalized_at ? 'Lista cerrada' : 'En directo'}</span></div>
+      <span class="chip${sess.finalized_at ? '' : ' brand live'}">${sess.finalized_at ? 'Lista cerrada' : 'En directo'}</span></div>
     ${PRIO_LEGEND}
     ${renderList(s, me.player.id, { flashMe: joined })}</div>`;
   if (s.teams_proposal) html += teamsProposalHtml(s.teams_proposal, me.player.id);
   $app.innerHTML = html;
 }
 
+// Previsión para la hora del entreno; si llueve, el dress code de la casa
+function weatherHtml(w) {
+  if (!w) return '';
+  const bits = [`${w.temp}°C`, w.rain_prob != null ? `${w.rain_prob}% de lluvia` : '', w.wind >= 25 ? `viento ${w.wind} km/h` : ''].filter(Boolean);
+  return `<div class="hero-weather${w.rain ? ' is-rain' : ''}">
+    <span class="weather-icon" aria-hidden="true">${esc(w.icon)}</span>
+    <span><strong>${esc(w.label)}</strong> a las ${esc(w.hour)} · ${esc(bits.join(' · '))}
+      ${w.joke ? `<em class="weather-joke">${esc(w.joke)}</em>` : ''}</span></div>`;
+}
+
 // Equipos provisionales: se recalculan con cada inscripción según las estadísticas
 function teamsProposalHtml(tp, meId = null) {
   if (!tp) {
-    return `<div class="card"><h2>Equipos</h2><p class="muted small">Se forman solos en cuanto haya 4 personas apuntadas:
-      dos equipos hasta 17 y triangular de tres desde 18.</p></div>`;
+    return `<div class="card"><h2>Equipos</h2><p class="muted small">Se forman solos en cuanto haya 14 convocados:
+      7 contra 7, 8 contra 8 desde 16 y triangular de tres equipos desde 21.</p></div>`;
   }
   return `<div class="card"><h2>Equipos</h2>
     <p class="small muted">${esc(tp.description)}. Se reequilibran con cada inscripción según las estadísticas de la temporada.</p>
@@ -489,14 +542,23 @@ function activityList(rows) {
 
 function renderList(s, meId, { admin = false, flashMe = false } = {}) {
   const row = (e) => `<li class="${e.player_id === meId ? `me${flashMe ? ' flash' : ''}` : ''}">
-    <span class="pos">${e.position}</span>${prioBadge(e.priority)}
+    <span class="pos">${e.position}</span>${avatar(e.name)}
     <span class="name">${esc(e.name)}${e.player_id === meId ? ' <span class="muted">(tú)</span>' : ''}${e.is_coordinator ? ' <span class="chip">Coordinación</span>' : ''}
       <small>${esc(e.reason)}${e.signed_up_at ? ` · ${esc(fmtTime(e.signed_up_at))}` : ''}${e.added_by_admin ? ' · añadido por coordinación' : ''}</small></span>
+    ${prioBadge(e.priority)}
+    ${admin && e.role === 'reserva' ? `<button class="btn-sm" data-act="callUp" data-pid="${e.player_id}" data-on="1" title="Convocar como cambio">Convocar</button>` : ''}
+    ${admin && e.role === 'cambio' ? `<button class="btn-sm btn-ghost" data-act="callUp" data-pid="${e.player_id}" data-on="0" title="Quitar de los cambios">A reservas</button>` : ''}
     ${admin ? `<button class="btn btn-ghost btn-icon" data-act="adminSetResponse" data-pid="${e.player_id}" data-answer="no" aria-label="Quitar a ${esc(e.name)} de la lista" title="Quitar de la lista">${icon('x')}</button>` : ''}
   </li>`;
-  let html = `<div class="divider">Titulares</div>`;
+  const fmt = s.format;
+  let html = `<div class="divider">Convocados${fmt ? ` · ${esc(fmt.label)}` : ''}</div>`;
   html += s.titulares.length ? `<ul class="list">${s.titulares.map(row).join('')}</ul>` : '<p class="muted small">Aún no se ha apuntado nadie. Las primeras plazas son para quien no vino la semana pasada.</p>';
-  if (s.reservas.length) html += `<div class="divider">Reservas</div><ul class="list">${s.reservas.map(row).join('')}</ul>`;
+  if (s.cambios?.length) html += `<div class="divider">Cambios · convocados por Coordinación</div><ul class="list">${s.cambios.map(row).join('')}</ul>`;
+  if (s.reservas.length) {
+    html += `<div class="divider">Reservas</div>`;
+    if (admin && fmt?.kind === 'triangular') html += '<p class="small muted">Ya hay triangular: decide si convocas a alguien como cambio.</p>';
+    html += `<ul class="list">${s.reservas.map(row).join('')}</ul>`;
+  }
   if (s.no_van.length) {
     html += `<div class="divider">No van · ${s.no_van.length}</div><p class="small muted">${s.no_van.map((n) => esc(n.name)).join(', ')}</p>`;
   }
@@ -1103,7 +1165,9 @@ async function viewRules() {
   <div class="card"><h2>Entrenamientos</h2><ul class="rules">
     <li>Miércoles de 22:00 a 23:00 en el Polideportivo Marqués de Samaranch. Llega 15 minutos antes para cambiarte.</li>
     <li>Coordinación publica la convocatoria, normalmente el <strong>domingo a las 17:00</strong>. Si no sabes seguro si podrás ir, no te apuntes.</li>
-    <li>Hay 16 plazas (21 si se juega triangular). Si está llena, quedas en reservas y entras automáticamente cuando alguien se borra.</li>
+    <li>Hacen falta <strong>14 para jugar</strong> (7 contra 7). Con 16 se juega 8 contra 8 y con <strong>21, triangular</strong> de tres equipos con partidos de 8 minutos.</li>
+    <li>A partir de 16 quedas en reservas, pero si se llega a 21 entras al triangular y te avisamos. Desde la 22.ª persona eres reserva y Coordinación decide si te convoca como cambio.</li>
+    <li>Si alguien se borra, la primera reserva entra automáticamente.</li>
     <li>La lista se completa en directo. Coordinación puede cerrarla antes del entreno.</li>
     <li>Puedes borrarte sin penalización hasta el <strong>martes a las 15:00</strong>.</li></ul></div>
   <div class="card"><h2>Prioridades</h2>
@@ -1154,9 +1218,17 @@ async function viewAdmin(tab = 'convocatoria') {
     incidencias: adminIncidencias, jugadores: adminJugadores, actividad: adminActividad,
   }[tab];
   if (!fn) { go('/admin'); return; }
-  $app.innerHTML = head + '<div id="adminBody"><p class="muted">Cargando…</p></div>';
+  // Al repintar la misma pestaña (tras convocar, asignar…) se conserva la posición en la página
+  const sameTab = S.adminTab === tab && document.getElementById('adminBody');
+  const y = window.scrollY;
+  S.adminTab = tab;
+  $app.innerHTML = head + `<div id="adminBody"${sameTab ? ` style="min-height:${document.getElementById('adminBody').offsetHeight}px"` : ''}><p class="muted">Cargando…</p></div>`;
   const body = document.getElementById('adminBody');
-  if (body) await fn(body);
+  if (body) {
+    await fn(body);
+    body.style.minHeight = '';
+    if (sameTab) window.scrollTo({ top: y });
+  }
 }
 
 function adminTabsHtml(tab, ov) {
@@ -1194,7 +1266,7 @@ actions.newSession = () => {
       <label><input type="radio" name="nsPub" value="sunday"> Publicar, inscripciones desde el domingo a las 17:00</label>
       <label><input type="radio" name="nsPub" value="draft"> Guardar como borrador (no la ven los jugadores)</label>
     </fieldset>
-    <p class="small muted">Con 16 plazas se juega un partido; con 21, triangular de tres equipos con partidos de 8 minutos.</p>
+    <p class="small muted">Mínimo 14 para jugar (7 contra 7), 16 para 8 contra 8. Al llegar a 21 apuntados se convoca a todos para un triangular de partidos de 8 minutos, sin tocar las plazas.</p>
     <div class="dialog-actions"><button value="cancel" class="btn-ghost">Volver</button><button value="ok" class="btn-primary">Crear convocatoria</button></div></form>`;
   $dialog.showModal();
   $dialog.onclose = async () => {
@@ -1242,11 +1314,11 @@ async function adminConvocatoria(el) {
   const s = d.session;
   const players = (await api('/api/admin/players')).filter((p) => p.active);
   S.players = players;
-  const inList = new Set([...d.titulares, ...d.reservas].map((e) => e.player_id));
-  const yes = d.titulares.length + d.reservas.length;
+  const inList = new Set([...d.titulares, ...d.cambios, ...d.reservas].map((e) => e.player_id));
+  const yes = d.titulares.length + d.cambios.length + d.reservas.length;
   const pubState = s.cancelled ? { cls: 'is-cancel', ic: 'x', t: 'Entrenamiento cancelado', p: 'Los jugadores lo ven como cancelado.' }
     : !s.is_published ? { cls: 'is-wait', ic: 'lock', t: 'Borrador', p: 'Los jugadores todavía no la ven.' }
-      : s.is_open ? { cls: 'is-in', ic: 'check', t: 'Publicada · inscripciones abiertas', p: `${plural(yes, 'persona apuntada', 'personas apuntadas')} de ${s.capacity} plazas.` }
+      : s.is_open ? { cls: 'is-in', ic: 'check', t: 'Publicada · inscripciones abiertas', p: `${plural(yes, 'persona apuntada', 'personas apuntadas')} · ${d.format.label}.` }
         : s.has_started ? { cls: '', ic: 'lock', t: 'Publicada · inscripciones cerradas', p: 'El entreno ya ha empezado.' }
           : { cls: 'is-wait', ic: 'clock', t: 'Publicada', p: `Las inscripciones se abren el ${fmtDateTime(s.opens_at)}.` };
   const pubButtons = s.cancelled || s.has_started ? '' : !s.is_published
@@ -1261,6 +1333,7 @@ async function adminConvocatoria(el) {
       <span>${icon('clock')} ${esc(s.start_time)} · llegada ${esc(s.arrival_time || '21:45')}</span>
       <span>${icon('pin')} ${esc(s.location)}</span>
     </div>
+    ${weatherHtml(d.weather)}
     <div class="hero-status ${pubState.cls}">${icon(pubState.ic)}<div><strong>${esc(pubState.t)}</strong>
       <p>${esc(pubState.p)}${s.finalized_at ? ` Lista cerrada el ${esc(fmtDateTime(s.finalized_at))}.` : ''}${d.created_by_name ? ` Creada por ${esc(d.created_by_name)}.` : ''}</p></div></div>
     ${pubButtons ? `<div class="hero-actions">${pubButtons}</div>` : ''}
@@ -1287,7 +1360,7 @@ async function adminConvocatoria(el) {
   </div>
 
   <div class="grid grid-2">
-    <div class="card"><div class="row spread" style="margin-bottom:.5rem"><h2 style="margin:0">Lista · ${d.titulares.length} de ${s.capacity}${d.reservas.length ? ` + ${plural(d.reservas.length, 'reserva', 'reservas')}` : ''}</h2>
+    <div class="card"><div class="row spread" style="margin-bottom:.5rem"><h2 style="margin:0">Lista · ${d.titulares.length + d.cambios.length} convocados${d.reservas.length ? ` + ${plural(d.reservas.length, 'reserva', 'reservas')}` : ''}</h2>
       <span class="row">${s.finalized_at
         ? `<button class="btn-sm" data-act="finalize">${icon('refresh')} Recalcular</button><button class="btn-sm btn-ghost" data-act="unfinalize">Reabrir</button>`
         : `<button class="btn-sm" data-act="finalize">${icon('lock')} Cerrar la lista</button>`}</span></div>
@@ -1357,6 +1430,14 @@ actions.adminSetResponse = async (el) => {
   await api(`/api/admin/sessions/${S.adminSessionId}/responses/${el.dataset.pid}`, { method: 'PUT', body: { answer: el.dataset.answer } });
   render();
 };
+actions.callUp = async (el) => {
+  await api(`/api/admin/sessions/${S.adminSessionId}/responses/${el.dataset.pid}/callup`, { method: 'PUT', body: { on: el.dataset.on === '1' } });
+  toast(el.dataset.on === '1' ? 'Convocado como cambio. Se le ha avisado' : 'Vuelve a reservas'); S.keepScroll = true; render();
+};
+actions.readNotice = async (el) => {
+  el.closest('.notice')?.remove();
+  await api('/api/notifications/read', { method: 'POST', body: { ids: [Number(el.dataset.id)] } }).catch(() => {});
+};
 actions.adminAdd = async () => {
   const pid = document.getElementById('addPlayer').value;
   if (!pid) return;
@@ -1369,16 +1450,16 @@ async function adminMaterial(el) {
   const [data, players] = await Promise.all([api('/api/admin/equipment'), api('/api/admin/players')]);
   const active = players.filter((p) => p.active);
   const sess = S.overview.sessions.find((x) => x.id === S.adminSessionId);
-  const opts = (sel) => `<option value="">En el club (nadie se lo lleva)</option>${active.map((p) => `<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}`;
+  S.eqData = data; S.eqPlayers = active;
   el.innerHTML = `
   <div class="card"><h2>¿Quién se lleva el material?</h2>
     <p class="small muted">Al terminar el entreno, elige quién se lleva cada cosa${sess ? ` (queda asociado al entreno del ${esc(fmtShort(sess.date))})` : ''}. Se registra quién lo asignó y cuándo.</p>
     <ul class="list">${data.items.filter((i) => i.active).map((i) => `<li style="flex-wrap:wrap">
       <span class="name"><strong>${icon('bib')} ${esc(i.name)}</strong>
-        <small>${i.holder_name ? `Lo tiene <b>${esc(i.holder_name)}</b>` : 'En el club'}${i.assigned_at ? ` · ${esc(i.assigned_by_name || '—')} lo asignó el ${esc(fmtDateTime(i.assigned_at))}` : ''}</small></span>
+        <small>${i.holders.length ? `Lo ${i.holders.length > 1 ? 'tienen' : 'tiene'} ${i.holders.map((h) => `<b>${esc(h.name)}</b>`).join(', ')}` : 'En el club'}${i.assigned_at ? ` · ${esc(i.assigned_by_name || '—')} lo asignó el ${esc(fmtDateTime(i.assigned_at))}` : ''}</small></span>
       <span class="row">
-        <select id="eqHolder${i.id}" aria-label="Quién se lleva ${esc(i.name)}">${opts(i.holder_id)}</select>
-        <button class="btn-primary btn-sm" data-act="assignEquipment" data-id="${i.id}">Asignar</button>
+        <button class="btn-primary btn-sm" data-act="assignEquipment" data-id="${i.id}">${i.holders.length ? 'Cambiar' : 'Asignar'}</button>
+        ${i.holders.length ? `<button class="btn-sm" data-act="equipmentToClub" data-id="${i.id}">Al club</button>` : ''}
         <button class="btn-ghost btn-sm" data-act="toggleEquipment" data-id="${i.id}" data-active="0">Retirar</button>
       </span></li>`).join('') || '<li class="muted">No hay material activo.</li>'}</ul>
     <div class="row" style="margin-top:1rem">
@@ -1388,13 +1469,38 @@ async function adminMaterial(el) {
     ${data.items.some((i) => !i.active) ? `<p class="small muted" style="margin-top:.75rem">Retirado: ${data.items.filter((i) => !i.active).map((i) => `${esc(i.name)} <a href="#" data-act="toggleEquipment" data-id="${i.id}" data-active="1">reactivar</a>`).join(' · ')}</p>` : ''}
   </div>
   <div class="card"><h2>Historial del material</h2>${data.history.length ? `<ul class="list">${data.history.map((h) => `<li>
-    <span class="name"><strong>${esc(h.assigned_by_name || '—')}</strong> ${h.holder_name ? `asignó a <strong>${esc(h.holder_name)}</strong>` : 'dejó en el club'} los «${esc(h.equipment_name)}»
+    <span class="name"><strong>${esc(h.assigned_by_name || '—')}</strong> ${h.holder_names.length ? `asignó a <strong>${h.holder_names.map(esc).join(', ')}</strong>` : 'dejó en el club'} los «${esc(h.equipment_name)}»
       <small>${esc(fmtDateTime(h.assigned_at))}${h.session_date ? ` · tras el entreno del ${esc(fmtShort(h.session_date))}` : ''}${h.note ? ` · ${esc(h.note)}` : ''}</small></span></li>`).join('')}</ul>` : '<p class="muted small">Aún no se ha asignado nada.</p>'}</div>`;
 }
-actions.assignEquipment = async (el) => {
-  const holder = document.getElementById(`eqHolder${el.dataset.id}`).value;
-  await api(`/api/admin/equipment/${el.dataset.id}/assign`, { method: 'POST', body: { holder_id: holder ? Number(holder) : null, session_id: S.adminSessionId } });
-  toast(holder ? 'Material asignado' : 'Marcado como guardado en el club'); render();
+// Elegir a una o varias personas (p. ej. dos se llevan balones); los de la convocatoria salen primero
+actions.assignEquipment = (el) => {
+  const item = S.eqData.items.find((i) => i.id === Number(el.dataset.id));
+  const current = new Set(item.holders.map((h) => h.id));
+  const inSession = new Set((S.detail?.session?.id === S.adminSessionId ? [...S.detail.titulares, ...(S.detail.cambios || [])] : []).map((e) => e.player_id));
+  const people = [...S.eqPlayers].sort((a, b) => (inSession.has(b.id) - inSession.has(a.id)) || a.name.localeCompare(b.name));
+  $dialog.innerHTML = `<form method="dialog" class="stack"><h2>¿Quién se lleva los «${esc(item.name)}»?</h2>
+    <p class="small muted">Puedes elegir a varias personas. Si no marcas a nadie, queda en el club.</p>
+    <input type="search" id="eqFilter" placeholder="Buscar…" aria-label="Buscar persona" data-input="eqFilter">
+    <div class="pick-list" id="eqPick">${people.map((p) => `<label class="pick" data-name="${esc(p.name.toLowerCase())}">
+      <input type="checkbox" value="${p.id}" ${current.has(p.id) ? 'checked' : ''}> ${esc(p.name)}${inSession.has(p.id) ? ' <span class="muted small">· convocado</span>' : ''}</label>`).join('')}</div>
+    <div class="dialog-actions"><button value="cancel" class="btn-ghost">Volver</button><button value="ok" class="btn-primary">Guardar</button></div></form>`;
+  $dialog.showModal();
+  $dialog.onclose = async () => {
+    if ($dialog.returnValue !== 'ok') return;
+    const ids = [...$dialog.querySelectorAll('#eqPick input:checked')].map((c) => Number(c.value));
+    try {
+      await api(`/api/admin/equipment/${item.id}/assign`, { method: 'POST', body: { holder_ids: ids, session_id: S.adminSessionId } });
+      toast(ids.length ? `«${item.name}» asignado a ${plural(ids.length, 'persona', 'personas')}` : 'Marcado como guardado en el club'); render();
+    } catch (e) { toast(e.message, true); }
+  };
+};
+actions.eqFilter = (el) => {
+  const q = el.value.trim().toLowerCase();
+  document.querySelectorAll('#eqPick .pick').forEach((l) => { l.hidden = q && !l.dataset.name.includes(q); });
+};
+actions.equipmentToClub = async (el) => {
+  await api(`/api/admin/equipment/${el.dataset.id}/assign`, { method: 'POST', body: { holder_ids: [], session_id: S.adminSessionId } });
+  toast('Marcado como guardado en el club'); render();
 };
 actions.toggleEquipment = async (el) => {
   await api(`/api/admin/equipment/${el.dataset.id}`, { method: 'PATCH', body: { active: el.dataset.active === '1' } });
@@ -1427,9 +1533,9 @@ async function adminAsistencia(el) {
   S.detail = d;
   const saved = new Map(d.attendance.map((a) => [a.player_id, a.status]));
   if (!S.att || S.att.sid !== S.adminSessionId) {
-    const rows = [...d.titulares, ...d.reservas].map((e) => ({
+    const rows = [...d.titulares, ...d.cambios, ...d.reservas].map((e) => ({
       player_id: e.player_id, name: e.name, role: e.role,
-      status: saved.get(e.player_id) || (e.role === 'titular' ? 'attended' : 'left_out'),
+      status: saved.get(e.player_id) || (e.role === 'reserva' ? 'left_out' : 'attended'),
     }));
     // Personas con asistencia guardada que ya no están en la lista (p. ej. se borraron tarde)
     for (const [pid, status] of saved) {
@@ -1440,7 +1546,7 @@ async function adminAsistencia(el) {
     }
     S.att = { sid: S.adminSessionId, rows };
   }
-  const ROLE = { titular: 'Titular', reserva: 'Reserva', otro: 'Añadido a mano' };
+  const ROLE = { titular: 'Convocado', cambio: 'Cambio', reserva: 'Reserva', otro: 'Añadido a mano' };
   const CREATES = new Set(['late', 'no_show']);
   const baseline = new Map(S.att.rows.map((r) => [r.player_id, saved.get(r.player_id) || (r.role === 'reserva' ? 'left_out' : 'attended')]));
   const changed = S.att.rows.filter((r) => r.status !== baseline.get(r.player_id) || !d.attendance.length).length;
@@ -1500,8 +1606,8 @@ async function adminResultados(el) {
     const names = new Map();
     const attended = d.attendance.length
       ? d.attendance.filter((a) => a.status === 'attended' || a.status === 'late').map((a) => a.player_id)
-      : d.titulares.map((e) => e.player_id);
-    const all = [...d.titulares, ...d.reservas, ...d.no_van];
+      : [...d.titulares, ...d.cambios].map((e) => e.player_id);
+    const all = [...d.titulares, ...d.cambios, ...d.reservas, ...d.no_van];
     for (const pid of attended) names.set(pid, all.find((e) => e.player_id === pid)?.name || `#${pid}`);
     r.teams.forEach((t) => t.players.forEach((p) => names.set(p.id, p.name)));
     S.res = {
@@ -1832,8 +1938,10 @@ const FIELD = (label, id, type = 'text', extra = '') =>
   `<label class="field">${label}<input id="${id}" type="${type}" ${extra}></label>`;
 
 async function viewLogin() {
-  $app.innerHTML = `<div class="card" style="max-width:420px;margin:1rem auto">
+  $app.innerHTML = `<div class="card auth-card">
+    <img class="auth-logo" src="/icono-gmadrid.png" alt="" width="48" height="48">
     <h1>Entrar</h1>
+    <p class="small muted">Con el email y la contraseña de tu cuenta de la sección.</p>
     <form id="loginForm" class="stack">
       ${FIELD('Email', 'loginEmail', 'email', 'autocomplete="email" required')}
       ${FIELD('Contraseña', 'loginPw', 'password', 'autocomplete="current-password" required')}
@@ -1855,7 +1963,8 @@ async function viewLogin() {
 }
 
 async function viewRegister() {
-  $app.innerHTML = `<div class="card" style="max-width:480px;margin:1rem auto">
+  $app.innerHTML = `<div class="card auth-card auth-card-wide">
+    <img class="auth-logo" src="/icono-gmadrid.png" alt="" width="48" height="48">
     <h1>Crear cuenta</h1>
     <p class="small muted">Tus datos solo los ve Coordinación. Con el email y la contraseña entrarás después.</p>
     <form id="regForm" class="stack">

@@ -1,14 +1,15 @@
 // Equipos equilibrados para el entreno, según las estadísticas de la temporada.
-// 2 equipos hasta 17 jugadores (un partido toda la hora); 3 equipos desde 18 (triangular de 8 minutos).
+// Mínimo 14 para jugar: 2 equipos (7 contra 7, 8 contra 8…) y, desde 21, triangular de 3 equipos con partidos de 8 minutos.
 
 const TRAINING_MINUTES = 60;
 const TRIANGULAR_MATCH_MINUTES = 8;
-const TRIANGULAR_FROM = 18;
+const MIN_PLAYERS = 14;
+const TRIANGULAR_FROM = 21;
 
 const TEAM_STYLES = [
   { name: 'Amarillos', color: '#facc15' },
   { name: 'Naranjas', color: '#f97316' },
-  { name: 'Sin petos', color: '#f8fafc' },
+  { name: 'Azules', color: '#2563eb' },
 ];
 
 // Valoración de un jugador: puntos por partido + medio punto por gol o asistencia por entreno.
@@ -29,7 +30,7 @@ function ratings(stats) {
 }
 
 function teamCount(n) {
-  if (n < 4) return 0;
+  if (n < MIN_PLAYERS) return 0;
   return n >= TRIANGULAR_FROM ? 3 : 2;
 }
 

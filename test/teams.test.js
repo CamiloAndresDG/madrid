@@ -24,7 +24,7 @@ test('con 21 apuntados: triangular de 3 equipos de 7 y partidos de 8 minutos en 
 });
 
 test('los equipos quedan equilibrados y nadie se repite', () => {
-  for (const n of [10, 16, 18, 21]) {
+  for (const n of [14, 15, 16, 18, 21]) {
     const p = T.propose(entries(n), stats(n));
     const ids = p.teams.flatMap((t) => t.players.map((x) => x.player_id));
     assert.strictEqual(new Set(ids).size, n);
@@ -33,8 +33,9 @@ test('los equipos quedan equilibrados y nadie se repite', () => {
   }
 });
 
-test('menos de 4 apuntados: aún no hay equipos; recién llegados valen la mediana', () => {
-  assert.strictEqual(T.propose(entries(3), stats(3)), null);
+test('menos de 14 convocados: aún no hay equipos; recién llegados valen la mediana', () => {
+  assert.strictEqual(T.propose(entries(13), stats(13)), null);
+  assert.deepStrictEqual(T.propose(entries(14), stats(14)).teams.map((t) => t.players.length), [7, 7]);
   const rate = T.ratings([{ player_id: 1, played: 2, points: 6, goals: 0, assists: 0, attended: 2 }]);
   assert.strictEqual(rate(99), rate(1));
 });

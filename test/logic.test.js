@@ -139,3 +139,62 @@ test('el registro de actividad guarda textos con símbolos (UTF-8)', async () =>
   assert.strictEqual(last.actor_name, 'Ana');
   assert.match(last.summary, /22:00 → 21:30/);
 });
+
+test('formato según convocados: faltan, 7 contra 7, 8 contra 8 y triangular', () => {
+  assert.strictEqual(L.formatInfo(13, 13).kind, 'faltan');
+  assert.strictEqual(L.formatInfo(13, 13).missing, 1);
+  assert.strictEqual(L.formatInfo(14, 14).kind, '7v7');
+  assert.strictEqual(L.formatInfo(16, 20).kind, '8v8');
+  assert.strictEqual(L.formatInfo(16, 20).next.missing, 1);
+  assert.strictEqual(L.formatInfo(21, 25).kind, 'triangular');
+  assert.strictEqual(L.cutoffFor(20, 16), 16);
+  assert.strictEqual(L.cutoffFor(21, 16), 21);
+  assert.strictEqual(L.cutoffFor(30, 16), 21);
+});
+
+test('17.º reserva, con 21 entra al triangular y se le avisa; el 22.º es reserva y Coordinación lo convoca como cambio', async () => {
+  const N = require('../src/notify');
+  const sid = await session('2026-11-25', 16);
+  const ids = [];
+  for (let i = 0; i < 22; i++) ids.push(await player(`T${String(i + 1).padStart(2, '0')}`));
+  const t = (i) => `2026-11-22T16:00:${String(i).padStart(2, '0')}Z`;
+  for (let i = 0; i < 17; i++) await yes(sid, ids[i], t(i));
+  let list = await L.computeList(await L.getSession(sid));
+  assert.strictEqual(list.format.kind, '8v8');
+  assert.strictEqual(list.entries.find((e) => e.player_id === ids[16]).role, 'reserva');
+
+  for (let i = 17; i < 20; i++) await yes(sid, ids[i], t(i));
+  const before = await N.snapshot(sid);
+  await yes(sid, ids[20], t(20)); // el 21.º
+  const created = await N.notifyChanges(null, before, await N.snapshot(sid), { skip: ids[20] });
+  assert.deepStrictEqual(created.map((c) => c.player_id).sort((a, b) => a - b), ids.slice(16, 20));
+  assert.ok(created.every((c) => c.kind === 'triangular'));
+  const [notice] = await N.unread(ids[16]);
+  assert.match(notice.message, /triangular/);
+
+  await yes(sid, ids[21], t(21)); // el 22.º
+  list = await L.computeList(await L.getSession(sid));
+  assert.strictEqual(list.format.kind, 'triangular');
+  assert.strictEqual(list.entries.filter((e) => e.role === 'titular').length, 21);
+  assert.strictEqual(list.entries[21].role, 'reserva');
+
+  const b2 = await N.snapshot(sid);
+  await db.run('UPDATE responses SET called_up = 1 WHERE session_id = $1 AND player_id = $2', [sid, ids[21]]);
+  const c2 = await N.notifyChanges(null, b2, await N.snapshot(sid));
+  assert.deepStrictEqual(c2, [{ player_id: ids[21], kind: 'called_up' }]);
+  assert.strictEqual((await L.computeList(await L.getSession(sid))).entries[21].role, 'cambio');
+
+  // Se borran dos: quedan 20, se deshace el triangular y los puestos 17-19 vuelven a reservas; el cambio sigue convocado
+  const b3 = await N.snapshot(sid);
+  await db.run(`UPDATE responses SET answer = 'no' WHERE session_id = $1 AND player_id = ANY($2::int[])`, [sid, [ids[0], ids[1]]]);
+  const c3 = await N.notifyChanges(null, b3, await N.snapshot(sid));
+  assert.strictEqual(c3.length, 3);
+  assert.ok(c3.every((c) => c.kind === 'demoted'));
+  list = await L.computeList(await L.getSession(sid));
+  assert.strictEqual(list.entries.find((e) => e.player_id === ids[21]).role, 'cambio');
+  assert.deepStrictEqual(c3.map((c) => c.player_id).sort((a, b) => a - b), ids.slice(18, 21));
+  const [back] = await N.unread(ids[20]);
+  assert.match(back.message, /Ya no hay triangular/);
+  await N.markRead(ids[20]);
+  assert.strictEqual((await N.unread(ids[20])).length, 0);
+});

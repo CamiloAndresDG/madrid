@@ -22,6 +22,31 @@ const ATTENDANCE_STATUSES = {
 };
 
 const MIN_ATTENDANCE_PER_QUARTER = 4;
+const MIN_PLAYERS = 14;      // 7 contra 7
+const FULL_MATCH = 16;       // 8 contra 8
+const TRIANGULAR_AT = 21;    // 3 equipos de 7
+
+// Cupo de convocados según cuántos se apuntan: hasta las plazas de la convocatoria (16 por defecto)
+// y, si se llega a 21, todos los 21 para hacer triangular
+function cutoffFor(signed, capacity) {
+  return signed >= TRIANGULAR_AT ? Math.max(TRIANGULAR_AT, capacity) : Math.min(signed, capacity);
+}
+
+// Qué partido sale con los convocados (incluidos los cambios) y cuántos faltan para el siguiente formato
+function formatInfo(convocados, signed) {
+  if (signed >= TRIANGULAR_AT && convocados >= TRIANGULAR_AT) {
+    return { kind: 'triangular', label: 'Triangular de 3 equipos', missing: 0, next: null };
+  }
+  if (convocados < MIN_PLAYERS) {
+    const n = MIN_PLAYERS - convocados;
+    return { kind: 'faltan', label: `Faltan ${n} para poder jugar`, missing: n, next: { at: MIN_PLAYERS, label: '7 contra 7', missing: n } };
+  }
+  const toTri = TRIANGULAR_AT - signed;
+  if (convocados >= FULL_MATCH) {
+    return { kind: '8v8', label: '8 contra 8', missing: 0, next: { at: TRIANGULAR_AT, label: 'triangular', missing: toTri } };
+  }
+  return { kind: '7v7', label: '7 contra 7', missing: 0, next: { at: FULL_MATCH, label: '8 contra 8', missing: FULL_MATCH - convocados } };
+}
 const SERIOUS_LIMIT = 2;
 
 // ---------- Fechas en hora de Madrid ----------
@@ -110,7 +135,7 @@ async function sessionOutcome(session, ctx = newCtx()) {
     for (const r of rows) out.set(r.player_id, r.status);
   } else {
     const list = await computeList(session, ctx);
-    for (const e of list.entries) out.set(e.player_id, e.role === 'titular' ? 'attended' : 'left_out');
+    for (const e of list.entries) out.set(e.player_id, e.role === 'reserva' ? 'left_out' : 'attended');
   }
   ctx.outcomes.set(session.id, out);
   return out;
@@ -157,7 +182,7 @@ async function computeList(session, ctx = newCtx()) {
     return {
       player_id: r.player_id, name: r.name, is_coordinator: !!r.is_coordinator,
       signed_up_at: r.signed_up_at, added_by_admin: !!r.added_by_admin,
-      locked_rank: r.locked_rank, locked_priority: r.locked_priority,
+      locked_rank: r.locked_rank, locked_priority: r.locked_priority, called_up: !!r.called_up,
       priority, reason,
     };
   });
@@ -180,12 +205,15 @@ async function computeList(session, ctx = newCtx()) {
     }
     return a.priority - b.priority || byTime(a, b);
   });
+  // titular = dentro del cupo; cambio = reserva que Coordinación ha convocado; reserva = en espera
+  const cutoff = cutoffFor(entries.length, session.capacity);
   entries.forEach((e, i) => {
     e.position = i + 1;
-    e.role = i < session.capacity ? 'titular' : 'reserva';
+    e.role = i < cutoff ? 'titular' : (e.called_up ? 'cambio' : 'reserva');
   });
+  const convocados = entries.filter((e) => e.role !== 'reserva').length;
 
-  const result = { session, previous: prev || null, entries };
+  const result = { session, previous: prev || null, entries, cutoff, format: formatInfo(convocados, entries.length) };
   ctx.lists.set(session.id, result);
   return result;
 }
@@ -213,7 +241,7 @@ function cancellationInfraction(session, { role, notified, now = new Date() }) {
   if (now > t.wednesdayDeadline) candidates.push('late_cancel_wednesday');
   else if (now > t.tuesdayDeadline) candidates.push('late_cancel_tuesday');
   if (session.finalized_at && !notified) {
-    candidates.push(role === 'titular' ? 'cancel_starter_no_notice' : 'cancel_reserve_no_notice');
+    candidates.push(role === 'reserva' ? 'cancel_reserve_no_notice' : 'cancel_starter_no_notice');
   }
   if (!candidates.length) return null;
   return candidates.sort((a, b) => INFRACTION_TYPES[b].severity - INFRACTION_TYPES[a].severity)[0];
@@ -400,6 +428,7 @@ async function dashboard(playerId, now = new Date()) {
 
 module.exports = {
   INFRACTION_TYPES, ATTENDANCE_STATUSES, MIN_ATTENDANCE_PER_QUARTER, SERIOUS_LIMIT,
+  MIN_PLAYERS, FULL_MATCH, TRIANGULAR_AT, cutoffFor, formatInfo,
   madridToDate, addDays, todayMadrid, nextWednesday, sessionTimes,
   getSession, previousSession, computeList, sessionOutcome, newCtx,
   seriousCounts, isExpelled, cancellationInfraction, seasonStats, quarterOf, dashboard,

@@ -9,6 +9,8 @@ const A = require('./auth');
 const T = require('./teams');
 const Audit = require('./audit');
 const F = require('./forum');
+const N = require('./notify');
+const W = require('./weather');
 
 const PORT = process.env.PORT || 3000;
 
@@ -103,17 +105,26 @@ function publicSession(s) {
   };
 }
 
-// Material activo y quién lo tiene ahora (la última asignación)
-function equipmentHolders({ includeInactive = false } = {}) {
-  return db.all(`SELECT e.id, e.name, e.active, a.holder_id, h.name AS holder_name, a.assigned_at,
-      a.assigned_by, b.name AS assigned_by_name, a.session_id, a.note
+// Material y quién lo tiene ahora: las personas de la última entrega de cada cosa (pueden ser varias)
+async function equipmentHolders({ includeInactive = false } = {}) {
+  const items = await db.all(`SELECT e.id, e.name, e.active, a.batch, a.assigned_at, a.assigned_by,
+      b.name AS assigned_by_name, a.session_id, a.note
     FROM equipment e
     LEFT JOIN LATERAL (SELECT * FROM equipment_assignments x WHERE x.equipment_id = e.id
       ORDER BY x.assigned_at DESC, x.id DESC LIMIT 1) a ON true
-    LEFT JOIN players h ON h.id = a.holder_id
     LEFT JOIN players b ON b.id = a.assigned_by
     ${includeInactive ? '' : 'WHERE e.active = 1'} ORDER BY e.name`);
+  const batches = items.map((i) => i.batch).filter(Boolean);
+  const rows = batches.length ? await db.all(`SELECT a.batch, a.holder_id, p.name FROM equipment_assignments a
+    JOIN players p ON p.id = a.holder_id WHERE a.batch = ANY($1::text[]) ORDER BY p.name`, [batches]) : [];
+  for (const i of items) {
+    i.holders = rows.filter((r) => r.batch === i.batch).map((r) => ({ id: r.holder_id, name: r.name }));
+    i.holder_names = i.holders.map((h) => h.name);
+  }
+  return items;
 }
+
+const listNames = (names) => (names.length <= 1 ? names.join('') : `${names.slice(0, -1).join(', ')} y ${names[names.length - 1]}`);
 
 async function listPayload(session, ctx) {
   const list = await L.computeList(session, ctx);
@@ -121,15 +132,20 @@ async function listPayload(session, ctx) {
     SELECT r.player_id, p.name, r.cancel_reason, r.updated_at FROM responses r JOIN players p ON p.id = r.player_id
     WHERE r.session_id = $1 AND r.answer = 'no' ORDER BY p.name`, [session.id]);
   const titulares = list.entries.filter((e) => e.role === 'titular');
+  const cambios = list.entries.filter((e) => e.role === 'cambio');
   return {
     session: publicSession(session),
     previous: list.previous ? { id: list.previous.id, date: list.previous.date } : null,
     titulares,
+    cambios,
     reservas: list.entries.filter((e) => e.role === 'reserva'),
     no_van: noes,
+    // Formato según los apuntados: faltan / 7 contra 7 / 8 contra 8 / triangular
+    format: { ...list.format, cutoff: list.cutoff, min: L.MIN_PLAYERS, full: L.FULL_MATCH, triangular_at: L.TRIANGULAR_AT },
     equipment: await equipmentHolders(),
+    weather: await W.forecast(session.date, session.start_time),
     // Equipos provisionales: se recalculan con cada inscripción según las estadísticas
-    teams_proposal: T.propose(titulares, await L.seasonStats()),
+    teams_proposal: T.propose([...titulares, ...cambios], await L.seasonStats()),
   };
 }
 
@@ -153,15 +169,23 @@ function whatsappText(payload) {
   const lines = [
     `⚽ *Entrenamiento Fútbol 7* — miércoles ${d}/${m}/${y} · ${s.start_time}`,
     `📍 ${s.location} (llegad a las ${s.arrival_time || '21:45'})`,
-    '',
-    `*TITULARES (${payload.titulares.length}/${s.capacity})*`,
-    ...payload.titulares.map((e) => `${e.position}. ${e.name}`),
   ];
+  const w = payload.weather;
+  if (w) {
+    lines.push(`${w.icon} ${w.label}, ${w.temp}°C a las ${w.hour}${w.rain_prob != null ? ` · ${w.rain_prob}% de lluvia` : ''}`);
+    if (w.joke) lines.push(`☔ ${w.joke}`);
+  }
+  lines.push('',
+    `*Formato:* ${payload.format.label}${payload.format.next && payload.format.next.missing > 0 ? ` (faltan ${payload.format.next.missing} para ${payload.format.next.label})` : ''}`,
+    '',
+    `*CONVOCADOS (${payload.titulares.length})*`,
+    ...payload.titulares.map((e) => `${e.position}. ${e.name}`));
+  if (payload.cambios.length) lines.push('', '*CAMBIOS*', ...payload.cambios.map((e) => `${e.position}. ${e.name}`));
   if (payload.reservas.length) {
     lines.push('', '*RESERVAS*', ...payload.reservas.map((e) => `${e.position}. ${e.name}`));
   }
-  const kit = (payload.equipment || []).filter((e) => e.holder_name);
-  if (kit.length) lines.push('', ...kit.map((e) => `🎒 ${e.name}: ${e.holder_name}`));
+  const kit = (payload.equipment || []).filter((e) => e.holder_names.length);
+  if (kit.length) lines.push('', ...kit.map((e) => `🎒 ${e.name}: ${listNames(e.holder_names)}`));
   const tp = payload.teams_proposal;
   if (tp) {
     lines.push('', `*EQUIPOS* (${tp.description})`, ...tp.teams.map((t) => `${t.name}: ${t.players.map((p) => p.name).join(', ')}`));
@@ -213,14 +237,20 @@ app.get('/api/me', requirePlayer, wrap(async (req) => {
     serious_infractions: counts.get(p.id) || 0,
     infractions: infractions.map((i) => ({ ...i, label: L.INFRACTION_TYPES[i.type]?.label || i.type, weeks: L.INFRACTION_TYPES[i.type]?.weeks })),
     session: null,
+    notifications: await N.unread(p.id),
   };
   if (s) {
     const payload = await listPayload(s, L.newCtx());
     const resp = await db.get('SELECT * FROM responses WHERE session_id = $1 AND player_id = $2', [s.id, p.id]);
-    const mine = [...payload.titulares, ...payload.reservas].find((e) => e.player_id === p.id) || null;
+    const mine = [...payload.titulares, ...payload.cambios, ...payload.reservas].find((e) => e.player_id === p.id) || null;
     out.session = { ...payload, my_response: resp ? resp.answer : null, my_entry: mine };
   }
   return out;
+}));
+
+app.post('/api/notifications/read', requirePlayer, wrap(async (req) => {
+  await N.markRead(req.player.id, req.body?.ids || null);
+  return { ok: true };
 }));
 
 app.put('/api/sessions/:id/response', requirePlayer, wrap(async (req) => {
@@ -236,6 +266,7 @@ app.put('/api/sessions/:id/response', requirePlayer, wrap(async (req) => {
 
   const existing = await db.get('SELECT * FROM responses WHERE session_id = $1 AND player_id = $2', [s.id, p.id]);
   let infraction = null;
+  const before = await N.snapshot(s.id);
 
   if (answer === 'yes') {
     if (!p.active) throw new HttpError(403, 'Tu inscripción no está activa. Habla con Coordinación.');
@@ -245,7 +276,8 @@ app.put('/api/sessions/:id/response', requirePlayer, wrap(async (req) => {
     await db.run(`INSERT INTO responses (session_id, player_id, answer, signed_up_at, updated_at)
       VALUES ($1, $2, 'yes', $3, $3)
       ON CONFLICT (session_id, player_id) DO UPDATE SET answer = 'yes', signed_up_at = excluded.signed_up_at,
-        updated_at = excluded.updated_at, cancel_reason = NULL, cancel_notified = NULL, locked_rank = NULL, locked_priority = NULL, added_by_admin = 0`,
+        updated_at = excluded.updated_at, cancel_reason = NULL, cancel_notified = NULL, locked_rank = NULL, locked_priority = NULL, added_by_admin = 0,
+        called_up = 0, called_up_by = NULL, called_up_at = NULL`,
     [s.id, p.id, nowIso()]);
   } else {
     let type = null, note = null;
@@ -253,7 +285,7 @@ app.put('/api/sessions/:id/response', requirePlayer, wrap(async (req) => {
       const entry = (await L.computeList(s)).entries.find((e) => e.player_id === p.id);
       type = L.cancellationInfraction(s, { role: entry?.role, notified: !!notified, now });
       note = [reason && `Motivo: ${reason}`, notified ? 'Dice que avisó al coordinador' : 'No avisó al coordinador',
-        entry && `Estaba en ${entry.role === 'titular' ? 'titulares' : 'reservas'} (puesto ${entry.position})`]
+        entry && `Estaba ${entry.role === 'reserva' ? 'en reservas' : entry.role === 'cambio' ? 'convocado como cambio' : 'convocado'} (puesto ${entry.position})`]
         .filter(Boolean).join(' · ');
     }
     await tx(async (c) => {
@@ -265,10 +297,12 @@ app.put('/api/sessions/:id/response', requirePlayer, wrap(async (req) => {
       await c.run(`INSERT INTO responses (session_id, player_id, answer, signed_up_at, updated_at, cancel_reason, cancel_notified)
         VALUES ($1, $2, 'no', NULL, $3, $4, $5)
         ON CONFLICT (session_id, player_id) DO UPDATE SET answer = 'no', signed_up_at = NULL, updated_at = excluded.updated_at,
-          cancel_reason = excluded.cancel_reason, cancel_notified = excluded.cancel_notified, locked_rank = NULL, locked_priority = NULL`,
+          cancel_reason = excluded.cancel_reason, cancel_notified = excluded.cancel_notified, locked_rank = NULL, locked_priority = NULL,
+          called_up = 0, called_up_by = NULL, called_up_at = NULL`,
       [s.id, p.id, nowIso(), reason || null, notified ? 1 : 0]);
     });
   }
+  await N.notifyChanges(db, before, await N.snapshot(s.id), { skip: p.id });
   return { ok: true, infraction };
 }));
 
@@ -533,6 +567,7 @@ admin.patch('/sessions/:id', wrap(async (req) => {
   }
   const changes = Object.entries(input).filter(([k, v]) => (s[k] ?? null) !== (v ?? null));
   if (!changes.length) return { ok: true };
+  const before = await N.snapshot(s.id);
   await tx(async (c) => {
     for (const [k, v] of changes) await c.run(`UPDATE sessions SET ${k} = $1 WHERE id = $2`, [v, s.id]);
     await c.run('UPDATE sessions SET updated_at = $1 WHERE id = $2', [nowIso(), s.id]);
@@ -541,6 +576,7 @@ admin.patch('/sessions/:id', wrap(async (req) => {
       : `cambió la convocatoria del ${dm(s.date)}: ${changes.map(([k, v]) => `${SESSION_FIELDS[k]} ${describe(k, s[k])} → ${describe(k, v)}`).join('; ')}`;
     await Audit.audit(c, req.player, { action: 'session.update', entity: 'session', entityId: s.id, sessionId: s.id, summary });
   });
+  if (changes.some(([k]) => k === 'capacity')) await N.notifyChanges(db, before, await N.snapshot(s.id));
   return { ok: true };
 }));
 
@@ -594,9 +630,9 @@ admin.post('/sessions/:id/finalize', wrap(async (req) => {
         [e.position, e.priority, s.id, e.player_id]);
     }
     await c.run('UPDATE sessions SET finalized_at = $1 WHERE id = $2', [nowIso(), s.id]);
-    const tit = Math.min(list.entries.length, s.capacity);
+    const conv = list.entries.filter((e) => e.role !== 'reserva').length;
     await Audit.audit(c, req.player, { action: 'session.finalize', entity: 'session', entityId: s.id, sessionId: s.id,
-      summary: `generó la lista final del ${dm(s.date)}: ${tit} titulares y ${list.entries.length - tit} reservas` });
+      summary: `cerró la lista del ${dm(s.date)} (${list.format.label.toLowerCase()}): ${conv} convocados y ${list.entries.length - conv} reservas` });
   });
   const payload = await listPayload(await L.getSession(s.id), L.newCtx());
   return { ok: true, whatsapp: whatsappText(payload) };
@@ -609,6 +645,26 @@ admin.post('/sessions/:id/unfinalize', wrap(async (req) => {
     await Audit.audit(c, req.player, { action: 'session.unfinalize', entity: 'session', entityId: s.id, sessionId: s.id,
       summary: `volvió a lista provisional la convocatoria del ${dm(s.date)}` });
   });
+  return { ok: true };
+}));
+
+// Convocar a una reserva como cambio (o quitarla de cambios). Se le avisa.
+admin.put('/sessions/:id/responses/:playerId/callup', wrap(async (req) => {
+  const s = await sessionOr404(req.params.id);
+  const pid = Number(req.params.playerId);
+  const on = !!req.body?.on;
+  const entry = (await L.computeList(s)).entries.find((e) => e.player_id === pid);
+  if (!entry) throw new HttpError(400, 'Esa persona no está apuntada a este entreno');
+  if (on && entry.role === 'titular') throw new HttpError(400, `${entry.name} ya está convocado`);
+  if (on === entry.called_up) return { ok: true };
+  const before = await N.snapshot(s.id);
+  await tx(async (c) => {
+    await c.run('UPDATE responses SET called_up = $1, called_up_by = $2, called_up_at = $3 WHERE session_id = $4 AND player_id = $5',
+      [on ? 1 : 0, on ? req.player.id : null, on ? nowIso() : null, s.id, pid]);
+    await Audit.audit(c, req.player, { action: on ? 'response.callup' : 'response.uncall', entity: 'session', entityId: s.id, sessionId: s.id,
+      summary: on ? `convocó a ${entry.name} como cambio para el ${dm(s.date)}` : `quitó a ${entry.name} de los cambios del ${dm(s.date)}` });
+  });
+  await N.notifyChanges(db, before, await N.snapshot(s.id));
   return { ok: true };
 }));
 
@@ -629,6 +685,7 @@ admin.put('/sessions/:id/responses/:playerId', wrap(async (req) => {
   if (!['yes', 'no'].includes(answer)) throw new HttpError(400, 'Respuesta no válida');
   const existing = await db.get('SELECT answer FROM responses WHERE session_id = $1 AND player_id = $2', [s.id, pid]);
   if (existing?.answer === answer) return { ok: true };
+  const before = await N.snapshot(s.id);
   await tx(async (c) => {
     await c.run(`INSERT INTO responses (session_id, player_id, answer, signed_up_at, updated_at, added_by_admin)
       VALUES ($1, $2, $3, $4, $5, 1)
@@ -638,6 +695,7 @@ admin.put('/sessions/:id/responses/:playerId', wrap(async (req) => {
     await Audit.audit(c, req.player, { action: answer === 'yes' ? 'response.add' : 'response.remove', entity: 'session', entityId: s.id, sessionId: s.id,
       summary: answer === 'yes' ? `apuntó a ${name} a la convocatoria del ${dm(s.date)}` : `quitó a ${name} de la convocatoria del ${dm(s.date)}` });
   });
+  await N.notifyChanges(db, before, await N.snapshot(s.id));
   return { ok: true };
 }));
 
@@ -774,11 +832,13 @@ admin.put('/sessions/:id/results', wrap(async (req) => {
 
 admin.get('/equipment', wrap(async () => ({
   items: await equipmentHolders({ includeInactive: true }),
-  history: await db.all(`SELECT a.*, e.name AS equipment_name, h.name AS holder_name, b.name AS assigned_by_name, s.date AS session_date
+  history: await db.all(`SELECT a.batch, MIN(a.assigned_at) AS assigned_at, e.name AS equipment_name,
+      b.name AS assigned_by_name, s.date AS session_date, MAX(a.note) AS note,
+      COALESCE(array_agg(h.name ORDER BY h.name) FILTER (WHERE h.name IS NOT NULL), '{}') AS holder_names
     FROM equipment_assignments a JOIN equipment e ON e.id = a.equipment_id
     LEFT JOIN players h ON h.id = a.holder_id LEFT JOIN players b ON b.id = a.assigned_by
     LEFT JOIN sessions s ON s.id = a.session_id
-    ORDER BY a.assigned_at DESC, a.id DESC LIMIT 200`),
+    GROUP BY a.batch, e.name, b.name, s.date ORDER BY MIN(a.assigned_at) DESC LIMIT 200`),
 })));
 admin.post('/equipment', wrap(async (req) => {
   const name = String(req.body?.name || '').trim();
@@ -814,24 +874,29 @@ admin.patch('/equipment/:id', wrap(async (req) => {
   });
   return { ok: true };
 }));
-// Asignar material al terminar el entreno: holder_id = quién se lo lleva (null = se queda en el club)
+// Asignar material al terminar el entreno: holder_ids = quiénes se lo llevan (vacío = se queda en el club).
+// Varias personas pueden llevarse la misma cosa (por ejemplo, los balones).
 admin.post('/equipment/:id/assign', wrap(async (req) => {
   const id = Number(req.params.id);
   const item = await db.get('SELECT * FROM equipment WHERE id = $1', [id]);
   if (!item) throw new HttpError(404, 'Material no encontrado');
-  const holderId = req.body?.holder_id ? Number(req.body.holder_id) : null;
-  const holder = holderId ? await nameOf(db, holderId) : null;
-  if (holderId && !holder) throw new HttpError(400, 'Jugador no encontrado');
+  const raw = Array.isArray(req.body?.holder_ids) ? req.body.holder_ids : (req.body?.holder_id ? [req.body.holder_id] : []);
+  const ids = [...new Set(raw.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+  const people = ids.length ? await db.all('SELECT id, name FROM players WHERE id = ANY($1::int[]) ORDER BY name', [ids]) : [];
+  if (people.length !== ids.length) throw new HttpError(400, 'Alguna de las personas elegidas no existe');
   const sessionId = req.body?.session_id ? Number(req.body.session_id) : null;
   const s = sessionId ? await L.getSession(sessionId) : null;
   const note = String(req.body?.note || '').trim() || null;
+  const batch = crypto.randomBytes(8).toString('hex');
+  const at = nowIso();
   await tx(async (c) => {
-    const r = await c.get(`INSERT INTO equipment_assignments (equipment_id, holder_id, session_id, assigned_by, assigned_at, note)
-      VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`, [id, holderId, s?.id || null, req.player.id, nowIso(), note]);
+    for (const holder of (people.length ? people : [null])) {
+      await c.run(`INSERT INTO equipment_assignments (equipment_id, holder_id, session_id, assigned_by, assigned_at, note, batch)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)`, [id, holder?.id || null, s?.id || null, req.player.id, at, note, batch]);
+    }
     const after = s ? ` tras el entreno del ${dm(s.date)}` : '';
     await Audit.audit(c, req.player, { action: 'equipment.assign', entity: 'equipment', entityId: id, sessionId: s?.id || null,
-      summary: holder ? `asignó a ${holder} los «${item.name}»${after}` : `marcó los «${item.name}» como guardados en el club${after}` });
-    return r.id;
+      summary: people.length ? `asignó a ${listNames(people.map((x) => x.name))} los «${item.name}»${after}` : `marcó los «${item.name}» como guardados en el club${after}` });
   });
   return { ok: true };
 }));
