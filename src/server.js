@@ -242,6 +242,9 @@ app.get('/api/stats', requireAny, wrap(async (req) => ({
   players: (await L.seasonStats()).filter((p) => p.active || A.canManage(req.roles)),
 })));
 
+// Panel de temporada: el del grupo y el del jugador que pregunta
+app.get('/api/dashboard', requirePlayer, wrap(async (req) => L.dashboard(req.player.id)));
+
 app.get('/api/rules', wrap(() => ({ infraction_types: L.INFRACTION_TYPES, attendance_statuses: L.ATTENDANCE_STATUSES })));
 
 // ---------- API: cuentas ----------

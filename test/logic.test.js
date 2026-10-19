@@ -110,3 +110,23 @@ test('estadísticas de temporada suman asistencia', async () => {
   assert.ok(ana.attended >= 2);
   assert.strictEqual(stats.find((s) => s.name === 'Carla').serious_infractions, 2);
 });
+
+test('panel personal: historial, puntos acumulados y racha', async () => {
+  // Ana gana un partido en el entreno del 14/10
+  const t1 = (await db.get(`INSERT INTO teams (session_id, name) VALUES ($1, 'Petos') RETURNING id`, [s2])).id;
+  const t2 = (await db.get(`INSERT INTO teams (session_id, name) VALUES ($1, 'Sin petos') RETURNING id`, [s2])).id;
+  await db.run('INSERT INTO team_players (team_id, player_id) VALUES ($1, $2)', [t1, A]);
+  await db.run('INSERT INTO team_players (team_id, player_id) VALUES ($1, $2)', [t2, K]);
+  await db.run('INSERT INTO matches (session_id, home_team_id, away_team_id, home_goals, away_goals) VALUES ($1, $2, $3, 3, 1)', [s2, t1, t2]);
+  await db.run('INSERT INTO player_stats (session_id, player_id, goals, mvp) VALUES ($1, $2, 2, 1)', [s2, A]);
+
+  const d = await L.dashboard(A, new Date('2026-10-15T12:00:00Z'));
+  assert.deepStrictEqual(d.me.history.map((h) => h.date), ['2026-10-07', '2026-10-14']);
+  const last = d.me.history[1];
+  assert.strictEqual(last.points, 3);
+  assert.strictEqual(last.goals, 2);
+  assert.strictEqual(last.mvp, true);
+  assert.strictEqual(d.me.cumulative[1].me, 3);
+  assert.strictEqual(d.me.streak, 2);
+  assert.strictEqual(d.group.sessions[1].goals, 4);
+});

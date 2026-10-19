@@ -298,9 +298,108 @@ async function seasonStats(now = new Date()) {
   });
 }
 
+// ---------- Panel de temporada (grupo y personal) ----------
+
+// Por cada entrenamiento ya jugado: asistencia y goles del grupo, y el historial del jugador
+// (estado, equipo, resultado, puntos, goles...). También puntos acumulados frente a la media
+// del grupo y rachas de asistencia (quedarse fuera o falta justificada no rompen la racha).
+async function dashboard(playerId, now = new Date()) {
+  const sessions = (await db.all('SELECT * FROM sessions WHERE cancelled = 0 ORDER BY date'))
+    .filter((s) => sessionTimes(s).endsAt <= now);
+  const activeCount = (await db.get('SELECT COUNT(*)::int AS n FROM players WHERE active = 1')).n || 1;
+  const teams = await db.all('SELECT id, session_id, name, color FROM teams');
+  const teamPlayers = await db.all('SELECT team_id, player_id FROM team_players');
+  const matches = await db.all('SELECT * FROM matches ORDER BY id');
+  const pstats = await db.all('SELECT * FROM player_stats');
+  const infractions = await db.all(`SELECT type, COUNT(*)::int AS n FROM infractions WHERE status = 'confirmed' GROUP BY type`);
+
+  const teamById = new Map(teams.map((t) => [t.id, t]));
+  const membersOf = new Map();
+  const teamOf = new Map(); // "sesión:jugador" -> equipo
+  for (const tp of teamPlayers) {
+    const t = teamById.get(tp.team_id);
+    if (!t) continue;
+    if (!membersOf.has(t.id)) membersOf.set(t.id, []);
+    membersOf.get(t.id).push(tp.player_id);
+    teamOf.set(`${t.session_id}:${tp.player_id}`, t);
+  }
+  const matchesOf = new Map();
+  for (const m of matches) {
+    if (!matchesOf.has(m.session_id)) matchesOf.set(m.session_id, []);
+    matchesOf.get(m.session_id).push(m);
+  }
+  const statOf = new Map(pstats.map((x) => [`${x.session_id}:${x.player_id}`, x]));
+
+  const ctx = newCtx();
+  const groupSessions = [];
+  const history = [];
+  const cumulative = [];
+  let myCum = 0, groupCum = 0;
+
+  for (const s of sessions) {
+    const outcome = await sessionOutcome(s, ctx);
+    const count = { attended: 0, late: 0, no_show: 0, excused: 0, left_out: 0 };
+    for (const st of outcome.values()) if (st in count) count[st]++;
+
+    // Resultado del día por jugador: G/E/P, goles a favor/en contra y puntos (3/1/0)
+    const rec = new Map();
+    const add = (teamId, gf, ga) => {
+      for (const pid of membersOf.get(teamId) || []) {
+        const r = rec.get(pid) || { wins: 0, draws: 0, losses: 0, gf: 0, ga: 0, points: 0 };
+        r.gf += gf; r.ga += ga;
+        if (gf > ga) { r.wins++; r.points += 3; } else if (gf === ga) { r.draws++; r.points += 1; } else r.losses++;
+        rec.set(pid, r);
+      }
+    };
+    const ms = matchesOf.get(s.id) || [];
+    for (const m of ms) { add(m.home_team_id, m.home_goals, m.away_goals); add(m.away_team_id, m.away_goals, m.home_goals); }
+    const dayPoints = [...rec.values()].reduce((a, r) => a + r.points, 0);
+
+    groupSessions.push({
+      id: s.id, date: s.date, capacity: s.capacity,
+      attended: count.attended + count.late, late: count.late, no_show: count.no_show, left_out: count.left_out,
+      goals: ms.reduce((a, m) => a + m.home_goals + m.away_goals, 0), matches: ms.length,
+    });
+
+    const mine = rec.get(playerId) || { wins: 0, draws: 0, losses: 0, gf: 0, ga: 0, points: 0 };
+    const st = statOf.get(`${s.id}:${playerId}`);
+    const team = teamOf.get(`${s.id}:${playerId}`);
+    myCum += mine.points;
+    groupCum += dayPoints / activeCount;
+    history.push({
+      session_id: s.id, date: s.date, status: outcome.get(playerId) || null,
+      team: team ? { name: team.name, color: team.color } : null,
+      ...mine, goals: st?.goals || 0, assists: st?.assists || 0, saves: st?.saves || 0, mvp: !!st?.mvp,
+    });
+    cumulative.push({ date: s.date, me: myCum, group: Math.round(groupCum * 10) / 10 });
+  }
+
+  // Rachas: cuenta asistir; quedarse fuera o falta justificada no la rompen; faltar sí
+  let streak = 0, best = 0, run = 0;
+  for (const h of history) {
+    if (h.status === 'attended' || h.status === 'late') { run++; best = Math.max(best, run); }
+    else if (h.status === 'left_out' || h.status === 'excused') continue;
+    else run = 0;
+  }
+  for (let i = history.length - 1; i >= 0; i--) {
+    const st = history[i].status;
+    if (st === 'attended' || st === 'late') streak++;
+    else if (st === 'left_out' || st === 'excused') continue;
+    else break;
+  }
+
+  return {
+    group: {
+      sessions: groupSessions,
+      infractions_by_type: infractions.map((r) => ({ type: r.type, label: INFRACTION_TYPES[r.type]?.label || r.type, n: r.n })),
+    },
+    me: { history, cumulative, streak, best_streak: best },
+  };
+}
+
 module.exports = {
   INFRACTION_TYPES, ATTENDANCE_STATUSES, MIN_ATTENDANCE_PER_QUARTER, SERIOUS_LIMIT,
   madridToDate, addDays, todayMadrid, nextWednesday, sessionTimes,
   getSession, previousSession, computeList, sessionOutcome, newCtx,
-  seriousCounts, isExpelled, cancellationInfraction, seasonStats, quarterOf,
+  seriousCounts, isExpelled, cancellationInfraction, seasonStats, quarterOf, dashboard,
 };

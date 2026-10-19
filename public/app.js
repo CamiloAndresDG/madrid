@@ -74,7 +74,7 @@ async function loadRules() {
 
 const routes = [
   [/^#\/?$/, viewHome],
-  [/^#\/clasificacion$/, viewStats],
+  [/^#\/clasificacion(?:\/(yo))?$/, viewStats],
   [/^#\/resultados$/, viewResultsList],
   [/^#\/resultados\/(\d+)$/, viewResultsDetail],
   [/^#\/normas$/, viewRules],
@@ -296,21 +296,122 @@ actions.answerNo = async (el) => {
   };
 };
 
-// ---------- Clasificación ----------
+// ---------- Clasificación: panel general y personal ----------
 
-async function viewStats() {
+const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
+const shortDate = (d) => fmtDate(d, { day: 'numeric', month: 'short' });
+const STATUS_TEXT = {
+  attended: 'Asistió', late: 'Llegó tarde', no_show: 'No se presentó', excused: 'Justificada', left_out: 'Fuera (lista llena)',
+};
+
+async function viewStats(sub) {
   if (!S.token) return viewHome();
-  const data = await api('/api/stats');
-  S.statsData = data;
-  renderStats();
+  const [stats, dash] = await Promise.all([api('/api/stats'), api('/api/dashboard')]);
+  S.statsData = stats;
+  S.dash = dash;
+  S.statsSub = sub === 'yo' ? 'yo' : 'general';
+  renderDashboard();
 }
 
-function renderStats() {
+function renderDashboard() {
+  const sub = S.statsSub;
+  $app.innerHTML = `<h1>Clasificación</h1>
+    <nav class="seg-tabs" aria-label="Vista">
+      <a href="#/clasificacion" class="${sub === 'general' ? 'active' : ''}">General</a>
+      <a href="#/clasificacion/yo" class="${sub === 'yo' ? 'active' : ''}">Mi temporada</a>
+    </nav>
+    <div id="dashBody"></div>`;
+  const body = document.getElementById('dashBody');
+  if (sub === 'yo') renderPersonal(body); else renderGeneral(body);
+}
+
+let resizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { if (location.hash.startsWith('#/clasificacion') && S.dash) renderDashboard(); }, 200);
+});
+
+const statTile = (label, value, sub = '') =>
+  `<div class="stat"><div class="stat-label">${esc(label)}</div><div class="stat-value">${esc(value)}</div>${sub ? `<div class="stat-sub">${esc(sub)}</div>` : ''}</div>`;
+
+// Ranking con barras (top N); la persona que mira se resalta en su color
+function barList(players, key, { top = 5, meId = null, unit = '' } = {}) {
+  const sorted = players.filter((p) => p[key] > 0).sort((a, b) => b[key] - a[key] || a.name.localeCompare(b.name));
+  if (!sorted.length) return '<p class="muted small">Todavía sin datos.</p>';
+  const max = sorted[0][key];
+  let rows = sorted.slice(0, top);
+  const meIdx = sorted.findIndex((p) => p.player_id === meId);
+  if (meIdx >= top) rows = [...rows, sorted[meIdx]];
+  return `<ol class="barlist">${rows.map((p) => {
+    const rank = sorted.findIndex((x) => x.player_id === p.player_id) + 1;
+    return `<li class="${p.player_id === meId ? 'me' : ''}">
+      <span class="rank">${rank}</span><span class="who">${esc(p.name)}${p.player_id === meId ? ' (tú)' : ''}</span>
+      <span class="val">${p[key]}${unit}</span>
+      <span class="track"><span style="width:${pct(p[key], max)}%"></span></span></li>`;
+  }).join('')}</ol>`;
+}
+
+function renderGeneral(body) {
   const data = S.statsData;
+  const g = S.dash.group;
+  const meId = S.me?.player?.id;
+  const active = data.players.filter((p) => p.active);
+  const sessions = g.sessions;
+  const totalGoals = sessions.reduce((a, s) => a + s.goals, 0);
+  const avgAtt = sessions.length ? sessions.reduce((a, s) => a + s.attended, 0) / sessions.length : 0;
+  const avgCap = sessions.length ? sessions.reduce((a, s) => a + s.capacity, 0) / sessions.length : 0;
+  const eligible = active.filter((p) => !p.attendance_exempt);
+  const meeting = eligible.filter((p) => p.current_quarter_count >= data.min_per_quarter).length;
+  const infTotal = g.infractions_by_type.reduce((a, r) => a + r.n, 0);
+
+  body.innerHTML = `
+  <div class="kpis">
+    ${statTile('Entrenamientos jugados', sessions.length)}
+    ${statTile('Asistencia media', avgAtt ? avgAtt.toFixed(1) : '—', avgCap ? `${pct(avgAtt, avgCap)} % de las plazas` : '')}
+    ${statTile('Goles en la temporada', totalGoals, sessions.length ? `${(totalGoals / sessions.length).toFixed(1)} por entreno` : '')}
+    ${statTile('Cumplen el mínimo', `${meeting}/${eligible.length}`, `${data.min_per_quarter} entrenos este trimestre`)}
+    ${statTile('Incidencias confirmadas', infTotal)}
+  </div>
+  <div class="grid grid-2">
+    <div class="card"><h2>Asistencia por entreno</h2><p class="small muted">Personas que jugaron cada miércoles; la línea marca las plazas.</p><div id="chAtt"></div></div>
+    <div class="card"><h2>Goles por entreno</h2><p class="small muted">Suma de todos los partidos del día.</p><div id="chGoals"></div></div>
+  </div>
+  <div class="card"><h2>Líderes</h2>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
+      <div><h3>Puntos</h3>${barList(active, 'points', { meId })}</div>
+      <div><h3>Goles</h3>${barList(active, 'goals', { meId })}</div>
+      <div><h3>Asistencias de gol</h3>${barList(active, 'assists', { meId })}</div>
+      <div><h3>Entrenos</h3>${barList(active, 'attended', { meId })}</div>
+      <div><h3>MVP</h3>${barList(active, 'mvps', { meId })}</div>
+      <div><h3>Paradas</h3>${barList(active, 'saves', { meId })}</div>
+    </div></div>
+  ${g.infractions_by_type.length ? `<div class="card"><h2>Incidencias por tipo</h2>
+    <ol class="barlist">${g.infractions_by_type.sort((a, b) => b.n - a.n).map((r) => `<li>
+      <span class="rank"></span><span class="who">${esc(r.label)}</span><span class="val">${r.n}</span>
+      <span class="track"><span style="width:${pct(r.n, Math.max(...g.infractions_by_type.map((x) => x.n)))}%"></span></span></li>`).join('')}</ol></div>` : ''}
+  <div class="card"><h2>Clasificación completa</h2><div id="statsTable"></div></div>`;
+
+  Charts.columns(document.getElementById('chAtt'), {
+    data: sessions.map((s) => ({ x: shortDate(s.date), title: fmtDate(s.date), value: s.attended,
+      detail: [s.late ? `${s.late} tarde` : '', s.no_show ? `${s.no_show} sin presentarse` : '', s.left_out ? `${s.left_out} fuera por lista llena` : ''].filter(Boolean) })),
+    colorVar: '--chart-group', label: 'asistentes',
+    refValue: sessions.length ? sessions[sessions.length - 1].capacity : 0, refLabel: 'plazas',
+  });
+  Charts.columns(document.getElementById('chGoals'), {
+    data: sessions.map((s) => ({ x: shortDate(s.date), title: fmtDate(s.date), value: s.goals,
+      detail: [`${s.matches} partido${s.matches === 1 ? '' : 's'}`] })),
+    colorVar: '--chart-group', label: 'goles',
+  });
+  renderStatsTable();
+}
+
+function renderStatsTable() {
+  const data = S.statsData;
+  const meId = S.me?.player?.id;
   const cols = [
-    ['name', 'Jugador', false], ['attended', 'Asist.', true], ['current_quarter_count', 'Trim.', true],
+    ['name', 'Jugador', false], ['attended', 'Entrenos', true], ['current_quarter_count', 'Trim.', true],
     ['played', 'PJ', true], ['wins', 'G', true], ['draws', 'E', true], ['losses', 'P', true], ['points', 'Pts', true],
-    ['goals', 'Goles', true], ['assists', 'Asist. gol', true], ['mvps', 'MVP', true], ['saves', 'Paradas', true],
+    ['goals', 'Goles', true], ['assists', 'Asist.', true], ['mvps', 'MVP', true], ['saves', 'Paradas', true],
   ];
   if (canManage()) cols.push(['infractions', 'Incid.', true]);
   const { key, dir } = S.sort;
@@ -319,35 +420,96 @@ function renderStats() {
     if (typeof va === 'string') return dir * va.localeCompare(vb);
     return dir * (va - vb) || a.name.localeCompare(b.name);
   });
-  const leader = (k) => Math.max(0, ...data.players.map((p) => p[k]));
-  const top = [['points', 'Más puntos'], ['goals', 'Máximo goleador'], ['assists', 'Más asistencias'], ['attended', 'Más entrenos']]
-    .map(([k, label]) => {
-      const best = leader(k);
-      const tied = best ? data.players.filter((p) => p[k] === best) : [];
-      const who = !tied.length ? '—' : tied.length > 3 ? `${tied.length} empatados` : tied.map((p) => p.name).join(', ');
-      return `<div class="card" style="margin:0"><div class="small muted">${label}</div><div style="font-size:1.4rem;font-weight:800">${best || '—'}</div><div class="small">${esc(who)}</div></div>`;
-    }).join('');
-  $app.innerHTML = `<h1>Clasificación de la temporada</h1>
-    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:1rem">${top}</div>
-    <div class="card"><div class="table-wrap"><table>
-      <thead><tr>${cols.map(([k, l, n]) => `<th class="${n ? 'num' : ''}" data-act="sortStats" data-key="${k}">${l}${k === key ? (dir < 0 ? ' ▾' : ' ▴') : ''}</th>`).join('')}</tr></thead>
-      <tbody>${rows.map((p) => `<tr class="${p.active ? '' : 'dim'}">${cols.map(([k, , n]) => {
-        let v = esc(p[k]);
-        if (k === 'name') v = `${esc(p.name)}${p.expelled ? ' <span class="chip danger">fuera</span>' : ''}`;
-        if (k === 'current_quarter_count') {
-          const low = !p.attendance_exempt && p[k] < data.min_per_quarter;
-          v = p.attendance_exempt ? '<span class="chip">exento</span>' : `<span class="chip ${low ? 'warn' : 'ok'}">${p[k]}/${data.min_per_quarter}</span>`;
-        }
-        return `<td class="${n ? 'num' : ''}">${v}</td>`;
-      }).join('')}</tr>`).join('')}</tbody></table></div>
+  document.getElementById('statsTable').innerHTML = `<div class="table-wrap"><table>
+    <thead><tr>${cols.map(([k, l, n]) => `<th class="${n ? 'num' : ''}" data-act="sortStats" data-key="${k}" tabindex="0">${l}${k === key ? (dir < 0 ? ' ▾' : ' ▴') : ''}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map((p) => `<tr class="${p.active ? '' : 'dim'}"${p.player_id === meId ? ' style="font-weight:700"' : ''}>${cols.map(([k, , n]) => {
+      let v = esc(p[k]);
+      if (k === 'name') v = `${esc(p.name)}${p.expelled ? ' <span class="chip danger">fuera</span>' : ''}`;
+      if (k === 'current_quarter_count') {
+        const low = !p.attendance_exempt && p[k] < data.min_per_quarter;
+        v = p.attendance_exempt ? '<span class="chip">exento</span>' : `<span class="chip ${low ? 'warn' : 'ok'}">${p[k]}/${data.min_per_quarter}</span>`;
+      }
+      return `<td class="${n ? 'num' : ''}">${v}</td>`;
+    }).join('')}</tr>`).join('')}</tbody></table></div>
     <p class="small muted" style="margin-top:.75rem">Puntos: 3 por partido ganado y 1 por empate con tu equipo. «Trim.» = entrenos este trimestre
-    (mínimo ${data.min_per_quarter} cada tres meses; si te quedaste fuera por lista llena no cuenta como falta).</p></div>`;
+    (mínimo ${data.min_per_quarter}; quedarse fuera por lista llena cuenta a favor).</p>`;
 }
 actions.sortStats = (el) => {
   const k = el.dataset.key;
   S.sort = { key: k, dir: S.sort.key === k ? -S.sort.dir : (k === 'name' ? 1 : -1) };
-  renderStats();
+  renderStatsTable();
 };
+
+function renderPersonal(body) {
+  const data = S.statsData;
+  const meId = S.me?.player?.id;
+  const me = data.players.find((p) => p.player_id === meId);
+  const d = S.dash.me;
+  if (!me) { body.innerHTML = '<div class="card empty">No hay datos de tu temporada todavía.</div>'; return; }
+  const active = data.players.filter((p) => p.active);
+  const rankOf = (key) => 1 + active.filter((p) => p[key] > me[key]).length;
+  const held = S.dash.group.sessions.length;
+  const played = d.history.filter((h) => h.team);
+  const form = played.slice(-10).map((h) => {
+    const r = h.wins > h.losses ? 'w' : h.wins < h.losses ? 'l' : 'd';
+    return `<span class="${r}" title="${esc(fmtDate(h.date))}: ${h.wins}G ${h.draws}E ${h.losses}P">${{ w: 'G', d: 'E', l: 'P' }[r]}</span>`;
+  }).join('');
+  const qMin = data.min_per_quarter;
+  const qCount = me.current_quarter_count;
+
+  body.innerHTML = `
+  <div class="grid grid-2">
+    <div class="card featured">
+      <div class="stat-label">Tus puntos esta temporada</div>
+      <div class="hero-figure">${me.points}</div>
+      <p class="muted" style="margin:.4rem 0 0">Puesto <strong>${rankOf('points')}</strong> de ${active.length} · ${me.wins} G · ${me.draws} E · ${me.losses} P</p>
+      ${form ? `<div class="stat-label" style="margin-top:1rem">Últimos entrenos (G/E/P)</div><div class="form-strip">${form}</div>` : ''}
+    </div>
+    <div class="card">
+      <h2>Este trimestre</h2>
+      ${me.attendance_exempt ? '<p class="muted">Estás exento/a del mínimo de asistencia.</p>' : `
+      <p><strong>${qCount}</strong> de ${qMin} entrenos mínimos ${qCount >= qMin ? '✅' : ''}</p>
+      <div class="meter ${qCount >= qMin ? '' : 'warn'}" role="meter" aria-valuemin="0" aria-valuemax="${qMin}" aria-valuenow="${qCount}"><span style="width:${Math.min(100, pct(qCount, qMin))}%"></span></div>
+      <p class="small muted" style="margin-top:.5rem">${qCount >= qMin ? 'Cumples el mínimo.' : `Te faltan ${qMin - qCount} para el mínimo.`} Quedarse fuera por lista llena cuenta a favor.</p>`}
+      <div class="kpis" style="margin:1rem 0 0">
+        ${statTile('Racha actual', d.streak, `mejor: ${d.best_streak}`)}
+        ${statTile('Incidencias', me.infractions, me.serious_infractions ? `${me.serious_infractions} grave(s)` : 'ninguna grave')}
+      </div>
+    </div>
+  </div>
+  <div class="kpis">
+    ${statTile('Entrenos', me.attended, held ? `${pct(me.attended, held)} % de ${held}` : '')}
+    ${statTile('Goles', me.goals, `puesto ${rankOf('goals')} · ${me.played ? (me.goals / Math.max(1, played.length)).toFixed(1) : '0'} por entreno`)}
+    ${statTile('Asistencias', me.assists, `puesto ${rankOf('assists')}`)}
+    ${statTile('MVP', me.mvps, `puesto ${rankOf('mvps')}`)}
+    ${statTile('Victorias', me.played ? `${pct(me.wins, me.played)} %` : '—', `${me.played} partidos`)}
+    ${statTile('Paradas', me.saves)}
+  </div>
+  <div class="grid grid-2">
+    <div class="card"><h2>Puntos acumulados</h2><p class="small muted">Tú frente a la media del grupo.</p><div id="chCum"></div></div>
+    <div class="card"><h2>Tus goles por entreno</h2><div id="chMyGoals"></div></div>
+  </div>
+  <div class="card"><h2>Historial</h2>${d.history.length ? `<div class="table-wrap"><table>
+    <thead><tr><th>Fecha</th><th>Estado</th><th>Equipo</th><th class="num">G-E-P</th><th class="num">Pts</th><th class="num">Goles</th><th class="num">Asist.</th><th class="num">Paradas</th><th></th></tr></thead>
+    <tbody>${[...d.history].reverse().map((h) => `<tr>
+      <td>${esc(shortDate(h.date))}</td>
+      <td>${h.status ? esc(STATUS_TEXT[h.status] || h.status) : '<span class="muted">No apuntado</span>'}</td>
+      <td>${h.team ? `<span class="team-dot" style="background:${esc(h.team.color || '#ccc')}"></span> ${esc(h.team.name)}` : '—'}</td>
+      <td class="num">${h.team ? `${h.wins}-${h.draws}-${h.losses}` : '—'}</td>
+      <td class="num">${h.points}</td><td class="num">${h.goals}</td><td class="num">${h.assists}</td><td class="num">${h.saves}</td>
+      <td>${h.mvp ? '⭐ MVP' : ''}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">Aún no hay entrenamientos jugados.</p>'}</div>`;
+
+  Charts.line(document.getElementById('chCum'), {
+    data: d.cumulative.map((c) => ({ x: shortDate(c.date), title: fmtDate(c.date), me: c.me, group: c.group })),
+    series: [{ key: 'me', label: 'Tú', colorVar: '--chart-me' }, { key: 'group', label: 'Media del grupo', colorVar: '--chart-group' }],
+    format: (v) => (Number.isInteger(v) ? String(v) : v.toFixed(1)),
+  });
+  Charts.columns(document.getElementById('chMyGoals'), {
+    data: d.history.map((h) => ({ x: shortDate(h.date), title: fmtDate(h.date), value: h.goals,
+      detail: [h.assists ? `${h.assists} asistencia${h.assists === 1 ? '' : 's'}` : '', h.mvp ? 'MVP' : ''].filter(Boolean) })),
+    colorVar: '--chart-me', label: 'goles',
+  });
+}
 
 // ---------- Resultados ----------
 
