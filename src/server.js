@@ -1,3 +1,4 @@
+const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const express = require('express');
@@ -13,6 +14,13 @@ const PORT = process.env.PORT || 3000;
 
 const app = express();
 app.use(compression());
+
+// index.html con versión en los enlaces a CSS/JS: cada despliegue cambia la URL y el navegador
+// no puede quedarse con una copia antigua (Render expone el commit en RENDER_GIT_COMMIT)
+const ASSET_V = (process.env.RENDER_GIT_COMMIT || String(Date.now())).slice(0, 12);
+const INDEX_HTML = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8').replaceAll('__V__', ASSET_V);
+const sendIndex = (_req, res) => res.set('Cache-Control', 'no-cache').type('html').send(INDEX_HTML);
+app.get(['/', '/index.html'], sendIndex);
 app.use(express.json({ limit: '25mb' })); // el foro envía fotos (ya reducidas en el navegador)
 // Estáticos: HTML, CSS y JS se revalidan siempre (ETag: si no ha cambiado, respuesta 304 vacía),
 // así cada despliegue se ve al momento. Las imágenes del sitio se cachean un día.
@@ -188,7 +196,7 @@ app.get('/api/me', requirePlayer, wrap(async (req) => {
     WHERE i.player_id = $1 ORDER BY s.date DESC`, [p.id]);
   const out = {
     player: {
-      id: p.id, name: p.name, email: p.email, phone: p.phone,
+      id: p.id, name: p.name, first_name: p.first_name, last_name: p.last_name, email: p.email, phone: p.phone,
       active: !!p.active, roles: req.roles, is_coordinator: req.roles.includes('coordinador'),
       can_manage: A.canManage(req.roles),
     },
@@ -326,6 +334,19 @@ app.post('/api/auth/login', wrap(async (req) => {
 
 app.post('/api/auth/logout', wrap(async (req) => {
   await A.deleteSession(bearer(req));
+  return { ok: true };
+}));
+
+app.patch('/api/me/profile', requirePlayer, wrap(async (req) => {
+  await A.updateProfile(req.player.id, req.body || {});
+  return { ok: true };
+}));
+app.post('/api/me/password', requirePlayer, wrap(async (req) => {
+  await A.changePassword(req.player.id, req.body?.current, req.body?.next, bearer(req));
+  return { ok: true };
+}));
+app.post('/api/auth/logout-all', requirePlayer, wrap(async (req) => {
+  await A.deleteAllSessions(req.player.id);
   return { ok: true };
 }));
 
@@ -866,7 +887,7 @@ admin.delete('/posts/:id', requireRole(), wrap(async (req) => {
 app.use('/api/admin', admin);
 
 app.use('/api', (_req, _res, next) => next(new HttpError(404, 'No encontrado')));
-app.get('*', (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
+app.get('*', sendIndex);
 
 app.use((err, _req, res, _next) => {
   const status = err.status || 500;

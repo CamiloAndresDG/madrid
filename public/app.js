@@ -121,6 +121,7 @@ const routes = [
   [/^#\/entrar$/, viewLogin],
   [/^#\/registro$/, viewRegister],
   [/^#\/salir$/, () => actions.logout()],
+  [/^#\/cuenta$/, viewAccount],
 ];
 
 function renderNav() {
@@ -131,13 +132,57 @@ function renderNav() {
   }
   items.push(['#/normas', 'Normas', 'book']);
   if (S.token && canManage()) items.push(['#/admin', 'Coordinación', 'shield']);
-  if (!S.token) items.push(['#/entrar', 'Entrar', 'user'], ['#/registro', 'Crear cuenta', 'plus']);
+  if (!S.token) items.unshift(['#/', 'Inicio', 'calendar']);
   $nav.innerHTML = items.map(([href, label, ic]) => {
     const active = href === '#/' ? (h === '#/' || h === '#') : h.startsWith(href);
     return `<a href="${href}"${active ? ' aria-current="page"' : ''}>${icon(ic)}<span>${label}</span></a>`;
   }).join('');
-  document.getElementById('logoutLink').hidden = !S.token;
+  renderAccount();
 }
+
+// ---------- Menú de cuenta (arriba a la derecha) ----------
+const $accountBtn = document.getElementById('accountBtn');
+const $accountMenu = document.getElementById('accountMenu');
+
+function renderAccount() {
+  const pl = S.me?.player;
+  const initials = $accountBtn.querySelector('.account-initials');
+  if (S.token && pl) {
+    initials.textContent = pl.name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
+    initials.hidden = false;
+    $accountBtn.setAttribute('aria-label', `Cuenta de ${pl.name}`);
+    $accountMenu.innerHTML = `<div class="account-head"><strong>${esc(pl.name)}</strong><span>${esc(pl.email || '')}</span></div>
+      <a href="#/cuenta" role="menuitem">${icon('user')} Mi cuenta</a>
+      <a href="#/clasificacion/yo" role="menuitem">${icon('chart')} Mi temporada</a>
+      <hr>
+      <a href="#/salir" role="menuitem" class="danger">${icon('logout')} Cerrar sesión</a>`;
+  } else {
+    initials.hidden = true;
+    $accountBtn.setAttribute('aria-label', 'Cuenta');
+    $accountMenu.innerHTML = S.token
+      ? `<a href="#/cuenta" role="menuitem">${icon('user')} Mi cuenta</a><a href="#/salir" role="menuitem" class="danger">${icon('logout')} Cerrar sesión</a>`
+      : `<div class="account-head"><strong>¿Juegas en la sección?</strong><span>Entra o crea tu cuenta para apuntarte.</span></div>
+        <a href="#/entrar" role="menuitem">${icon('user')} Entrar</a>
+        <a href="#/registro" role="menuitem">${icon('plus')} Crear cuenta</a>`;
+  }
+}
+function setAccountMenu(open) {
+  $accountMenu.hidden = !open;
+  $accountBtn.setAttribute('aria-expanded', String(open));
+  if (open) $accountMenu.querySelector('[role="menuitem"]')?.focus();
+}
+$accountBtn.addEventListener('click', (e) => { e.stopPropagation(); setAccountMenu($accountMenu.hidden); });
+document.addEventListener('click', (e) => { if (!$accountMenu.hidden && !e.target.closest('.account')) setAccountMenu(false); });
+$accountMenu.addEventListener('click', (e) => { if (e.target.closest('a')) setAccountMenu(false); });
+document.addEventListener('keydown', (e) => {
+  if ($accountMenu.hidden) return;
+  const items = [...$accountMenu.querySelectorAll('[role="menuitem"]')];
+  const i = items.indexOf(document.activeElement);
+  if (e.key === 'Escape') { setAccountMenu(false); $accountBtn.focus(); }
+  else if (e.key === 'ArrowDown') { e.preventDefault(); items[(i + 1) % items.length]?.focus(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); items[(i - 1 + items.length) % items.length]?.focus(); }
+});
+window.addEventListener('hashchange', () => setAccountMenu(false));
 
 const SKELETON = `<div class="skeleton" aria-hidden="true"><i style="width:40%;height:1.6rem"></i><i class="big"></i><i class="mid"></i><i class="mid"></i></div>`;
 let lastRoute = null;
@@ -169,6 +214,7 @@ async function render() {
         if (!S.keepScroll) window.scrollTo({ top: 0 });
       }
       S.keepScroll = false;
+      renderAccount();
       return;
     }
   }
@@ -1562,6 +1608,78 @@ actions.playerField = async (el) => {
   await api(`/api/admin/players/${el.dataset.id}`, { method: 'PATCH', body: { [el.dataset.f]: v } });
   toast('Guardado');
   if (el.type === 'checkbox') render();
+};
+
+// ---------- Mi cuenta ----------
+
+async function viewAccount() {
+  if (!S.token) return viewLogin();
+  S.me = await api('/api/me');
+  const pl = S.me.player;
+  const ROLE_NAMES = { coordinador: 'Coordinación', gestor: 'Gestión', petos: 'Petos', balones: 'Balones' };
+  $app.innerHTML = `<div class="page-head"><h1>Mi cuenta</h1></div>
+  <div class="grid grid-2">
+    <form id="profileForm" class="card stack" novalidate>
+      <h2>Tus datos</h2>
+      <div class="grid grid-2" style="gap:.75rem">
+        ${FIELD('Nombre', 'pfFirst', 'text', `autocomplete="given-name" required value="${esc(pl.first_name || pl.name.split(' ')[0] || '')}"`)}
+        ${FIELD('Apellidos', 'pfLast', 'text', `autocomplete="family-name" required value="${esc(pl.last_name || pl.name.split(' ').slice(1).join(' '))}"`)}
+      </div>
+      ${FIELD('Teléfono', 'pfPhone', 'tel', `autocomplete="tel" required value="${esc(pl.phone || '')}"`)}
+      ${FIELD('Email', 'pfEmail', 'email', `autocomplete="email" required value="${esc(pl.email || '')}"`)}
+      <p class="small muted" style="margin:0">Solo los ve Coordinación. Con el email entras en la web.</p>
+      <p class="status-box danger form-error" id="profileError" role="alert" hidden></p>
+      <div><button class="btn-primary" type="submit">Guardar datos</button></div>
+    </form>
+    <div class="stack">
+      <form id="pwForm" class="card stack" novalidate>
+        <h2>Contraseña</h2>
+        ${FIELD('Contraseña actual', 'pwCurrent', 'password', 'autocomplete="current-password" required')}
+        ${FIELD('Nueva contraseña (mín. 8)', 'pwNext', 'password', 'autocomplete="new-password" minlength="8" required')}
+        ${FIELD('Repite la nueva contraseña', 'pwNext2', 'password', 'autocomplete="new-password" minlength="8" required')}
+        <p class="small muted" style="margin:0">Al cambiarla se cierra tu sesión en los demás dispositivos.</p>
+        <p class="status-box danger form-error" id="pwError" role="alert" hidden></p>
+        <div><button class="btn-primary" type="submit">Cambiar contraseña</button></div>
+      </form>
+      <div class="card"><h2>Sesión</h2>
+        ${pl.roles.length ? `<p class="small">Tus roles: ${pl.roles.map((r) => `<span class="chip brand">${ROLE_NAMES[r] || r}</span>`).join(' ')}</p>` : ''}
+        <div class="row">
+          <a class="btn" href="#/salir">${icon('logout')} Cerrar sesión</a>
+          <button class="btn-danger" data-act="logoutAll">Cerrar en todos los dispositivos</button>
+        </div></div>
+    </div>
+  </div>`;
+  const formError = (id, msg) => { const b = document.getElementById(id); b.textContent = msg; b.hidden = !msg; };
+  document.getElementById('profileForm').onsubmit = (e) => {
+    e.preventDefault();
+    formError('profileError', '');
+    withBusy(e.target, async () => {
+      try {
+        await api('/api/me/profile', { method: 'PATCH', body: {
+          first_name: document.getElementById('pfFirst').value, last_name: document.getElementById('pfLast').value,
+          phone: document.getElementById('pfPhone').value, email: document.getElementById('pfEmail').value,
+        } });
+        S.me = await api('/api/me'); renderAccount(); toast('Datos guardados');
+      } catch (err) { formError('profileError', err.message); }
+    });
+  };
+  document.getElementById('pwForm').onsubmit = (e) => {
+    e.preventDefault();
+    formError('pwError', '');
+    const next = document.getElementById('pwNext').value;
+    if (next !== document.getElementById('pwNext2').value) { formError('pwError', 'Las contraseñas nuevas no coinciden.'); return; }
+    withBusy(e.target, async () => {
+      try {
+        await api('/api/me/password', { method: 'POST', body: { current: document.getElementById('pwCurrent').value, next } });
+        e.target.reset(); toast('Contraseña cambiada');
+      } catch (err) { formError('pwError', err.message); }
+    });
+  };
+}
+actions.logoutAll = async () => {
+  if (!await confirmDialog({ title: '¿Cerrar sesión en todos los dispositivos?', body: 'Tendrás que volver a entrar en el móvil, el ordenador y donde la tengas abierta.', confirm: 'Cerrar en todos', danger: true })) return;
+  await api('/api/auth/logout-all', { method: 'POST' });
+  forgetSession(); toast('Sesión cerrada en todos los dispositivos'); location.hash = '#/entrar';
 };
 
 // ---------- Cuentas: entrar y registrarse ----------

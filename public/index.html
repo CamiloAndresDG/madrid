@@ -19,7 +19,7 @@
       } catch (e) {}
     })();
   </script>
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=__V__">
 </head>
 <body>
   <!-- Iconos: un único trazo de 1.75 px sobre rejilla de 24 -->
@@ -73,16 +73,19 @@
       <button id="themeToggle" class="icon-btn" type="button" aria-label="Cambiar a modo oscuro" title="Modo claro / oscuro">
         <svg class="icon" aria-hidden="true"><use href="#i-moon"/></svg>
       </button>
-      <a id="logoutLink" class="icon-btn" href="#/salir" aria-label="Cerrar sesión" title="Cerrar sesión" hidden>
-        <svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg>
-      </a>
+      <div class="account">
+        <button id="accountBtn" class="icon-btn account-btn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="accountMenu" aria-label="Cuenta" title="Cuenta">
+          <svg class="icon" aria-hidden="true"><use href="#i-user"/></svg><span class="account-initials" hidden></span>
+        </button>
+        <div id="accountMenu" class="account-menu" role="menu" aria-labelledby="accountBtn" hidden></div>
+      </div>
     </div>
   </header>
   <div class="pride-band" aria-hidden="true"></div>
   <main id="app" class="container"><p class="muted">Cargando…</p></main>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <dialog id="dialog"></dialog>
-  <script src="/charts.js" defer></script>
-  <script src="/app.js" defer></script>
+  <script src="/charts.js?v=__V__" defer></script>
+  <script src="/app.js?v=__V__" defer></script>
 </body>
 </html>

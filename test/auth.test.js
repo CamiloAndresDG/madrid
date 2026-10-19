@@ -61,3 +61,22 @@ test('el email de COORDINATOR_EMAIL entra como coordinador y siempre queda uno',
   await A.setRoles(coord, ['balones']);                               // ya hay otro coordinador
   assert.deepStrictEqual(await A.rolesOf(coord), ['balones']);
 });
+
+test('Mi cuenta: editar datos y cambiar la contraseña', async () => {
+  const id = await A.register(datos({ email: 'perfil@example.com', first_name: 'Sam' }));
+  await A.updateProfile(id, { first_name: 'Sam', last_name: 'Ruiz Gil', phone: '622 333 444', email: 'Sam.Nuevo@Example.com' });
+  const me = await A.sessionPlayer((await A.createSession(id)).token);
+  assert.strictEqual(me.name, 'Sam Ruiz Gil');
+  assert.strictEqual(me.email, 'sam.nuevo@example.com');
+  await assert.rejects(A.updateProfile(id, { first_name: 'Sam', last_name: 'Ruiz', phone: '622333444', email: 'ana@example.com' }), /Ya existe otra cuenta/);
+
+  const keep = (await A.createSession(id)).token;
+  const other = (await A.createSession(id)).token;
+  await assert.rejects(A.changePassword(id, 'mal', 'nueva-clave-1', keep), /actual no es correcta/);
+  await A.changePassword(id, 'segura123', 'nueva-clave-1', keep);
+  assert.ok(await A.sessionPlayer(keep));                // la sesión actual sigue
+  assert.strictEqual(await A.sessionPlayer(other), null); // las demás se cierran
+  assert.strictEqual(await A.login('sam.nuevo@example.com', 'nueva-clave-1'), id);
+  await A.deleteAllSessions(id);
+  assert.strictEqual(await A.sessionPlayer(keep), null);
+});

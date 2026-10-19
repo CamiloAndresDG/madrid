@@ -625,3 +625,33 @@ dialog.lightbox { width: min(1100px, calc(100% - 16px)); max-height: calc(100% -
 .preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .preview button { position: absolute; top: 4px; right: 4px; width: 30px; min-height: 30px; padding: 0; border-radius: 50%; background: rgba(12, 7, 24, .7); color: #fff; border: 0; }
 .preview.processing::after { content: ""; position: absolute; inset: 0; margin: auto; width: 1.2rem; height: 1.2rem; border-radius: 50%; border: 2px solid var(--brand); border-right-color: transparent; animation: spin .7s linear infinite; }
+
+/* ---------- Cuenta (arriba a la derecha) ---------- */
+.account { position: relative; }
+.account-initials {
+  display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: 50%;
+  background: var(--brand); color: #fff; font: 700 .8rem/1 var(--font-body); letter-spacing: .02em;
+}
+.account-btn:has(.account-initials:not([hidden])) .icon { display: none; }
+.account-btn[aria-expanded="true"] { background: rgba(255, 255, 255, .1); }
+.account-menu {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 40; min-width: 240px; padding: .4rem;
+  background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-md);
+  box-shadow: 0 16px 40px rgba(12, 7, 24, .25); transform-origin: top right; animation: menu-in 160ms var(--ease-out);
+}
+.account-menu[hidden] { display: none; }
+@keyframes menu-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } to { opacity: 1; transform: none; } }
+.account-head { padding: .55rem .65rem .65rem; border-bottom: 1px solid var(--border); margin-bottom: .3rem; }
+.account-head strong { display: block; }
+.account-head span { color: var(--muted); font-size: .82rem; overflow-wrap: anywhere; }
+.account-menu a, .account-menu button {
+  display: flex; align-items: center; gap: .6rem; width: 100%; min-height: 42px; padding: 0 .65rem; border: 0; border-radius: var(--r-sm);
+  background: transparent; color: var(--text); font: 500 .92rem/1 var(--font-body); text-decoration: none; justify-content: flex-start;
+}
+.account-menu a:hover, .account-menu button:hover, .account-menu a:focus-visible, .account-menu button:focus-visible { background: var(--surface-2); text-decoration: none; }
+.account-menu .icon { color: var(--muted); }
+.account-menu .danger, .account-menu .danger .icon { color: var(--danger); }
+.account-menu hr { border: 0; border-top: 1px solid var(--border); margin: .3rem 0; }
+@media (max-width: 720px) {
+  .account-menu { position: fixed; top: 60px; right: 12px; left: auto; }
+}

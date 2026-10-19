@@ -109,6 +109,36 @@ async function login(email, password) {
   return p.id;
 }
 
+// ---------- Mi cuenta ----------
+
+async function updateProfile(playerId, input) {
+  const current = await db.get('SELECT * FROM players WHERE id = $1', [playerId]);
+  const { errors, data } = validateRegistration({ ...input, password: 'x'.repeat(8) });
+  if (errors.length) throw Object.assign(new Error(errors.join('. ')), { status: 400 });
+  if (data.email !== current.email && await db.get('SELECT 1 FROM players WHERE email = $1 AND id <> $2', [data.email, playerId])) {
+    throw Object.assign(new Error('Ya existe otra cuenta con ese email'), { status: 409 });
+  }
+  await db.run(`UPDATE players SET first_name = $1, last_name = $2, name = $3, phone = $4, email = $5 WHERE id = $6`,
+    [data.first_name, data.last_name, `${data.first_name} ${data.last_name}`, data.phone, data.email, playerId]);
+}
+
+// Cambia la contraseña y cierra las demás sesiones (la actual sigue abierta)
+async function changePassword(playerId, currentPw, nextPw, keepToken) {
+  const p = await db.get('SELECT password_hash FROM players WHERE id = $1', [playerId]);
+  if (!verifyPassword(String(currentPw || ''), p?.password_hash)) {
+    throw Object.assign(new Error('La contraseña actual no es correcta'), { status: 400 });
+  }
+  if (String(nextPw || '').length < 8) throw Object.assign(new Error('La nueva contraseña debe tener al menos 8 caracteres'), { status: 400 });
+  await tx(async (c) => {
+    await c.run('UPDATE players SET password_hash = $1 WHERE id = $2', [hashPassword(String(nextPw)), playerId]);
+    await c.run('DELETE FROM auth_sessions WHERE player_id = $1 AND token_hash <> $2', [playerId, hashToken(keepToken || '')]);
+  });
+}
+
+async function deleteAllSessions(playerId) {
+  await db.run('DELETE FROM auth_sessions WHERE player_id = $1', [playerId]);
+}
+
 // ---------- Sesiones ----------
 
 const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
@@ -142,4 +172,5 @@ module.exports = {
   hashPassword, verifyPassword, validateRegistration,
   rolesOf, canManage, setRoles, register, login,
   createSession, sessionPlayer, deleteSession,
+  updateProfile, changePassword, deleteAllSessions,
 };
