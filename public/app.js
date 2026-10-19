@@ -20,8 +20,14 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 async function api(path, { method = 'GET', body } = {}) {
   const headers = { 'Content-Type': 'application/json' };
   if (S.token) headers.Authorization = `Bearer ${S.token}`;
-  const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  let res;
+  try {
+    res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  } catch (e) {
+    throw new Error(navigator.onLine === false ? 'No tienes conexión. Revisa tu internet y vuelve a intentarlo.' : 'No se ha podido contactar con el servidor. Vuelve a intentarlo en un momento.');
+  }
   const data = await res.json().catch(() => ({}));
+  if (res.status >= 500) throw new Error('Algo ha fallado en el servidor. Vuelve a intentarlo en un momento.');
   if (res.status === 401 && S.token && !path.startsWith('/api/auth/')) {
     forgetSession();
   }
@@ -130,29 +136,67 @@ function renderNav() {
   document.getElementById('logoutLink').hidden = !S.token;
 }
 
+const SKELETON = `<div class="skeleton" aria-hidden="true"><i style="width:40%;height:1.6rem"></i><i class="big"></i><i class="mid"></i><i class="mid"></i></div>`;
+let lastRoute = null;
+let renderSeq = 0;
+
 async function render() {
   renderNav();
   const h = location.hash || '#/';
+  const route = h.replace(/\/(yo)$/, '');
+  const changedRoute = route !== lastRoute;
+  lastRoute = route;
+  const seq = ++renderSeq;
+  // Si la sección tarda, se muestran siluetas en lugar de dejar la anterior congelada
+  const skel = changedRoute ? setTimeout(() => { if (seq === renderSeq) { $app.innerHTML = SKELETON; $app.setAttribute('aria-busy', 'true'); } }, 180) : null;
   for (const [re, fn] of routes) {
     const m = h.match(re);
     if (m) {
       try { await fn(...m.slice(1)); }
-      catch (e) { $app.innerHTML = `<div class="card"><p>${esc(e.message)}</p></div>`; }
+      catch (e) {
+        if (seq !== renderSeq) return;
+        $app.innerHTML = `<div class="card empty load-error" role="alert">${icon('alert')}<h2>No se ha podido cargar</h2>
+          <p class="muted">${esc(e.message)}</p><button class="btn-primary" data-act="retry">Reintentar</button></div>`;
+      } finally {
+        clearTimeout(skel);
+        $app.removeAttribute('aria-busy');
+      }
+      if (changedRoute && seq === renderSeq) {
+        $app.classList.remove('view-enter'); void $app.offsetWidth; $app.classList.add('view-enter');
+        if (!S.keepScroll) window.scrollTo({ top: 0 });
+      }
+      S.keepScroll = false;
       return;
     }
   }
   location.hash = '#/';
 }
+window.addEventListener('offline', () => toast('Sin conexión: los cambios no se guardarán hasta que vuelva', true));
+window.addEventListener('online', () => { toast('Conexión recuperada'); render(); });
 window.addEventListener('hashchange', render);
 
 // Delegación de eventos: data-act="nombre" -> actions.nombre(el, event)
 const actions = {};
+actions.retry = () => render();
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-act]');
   if (!el || el.disabled) return;
   const fn = actions[el.dataset.act];
-  if (fn) { e.preventDefault(); Promise.resolve(fn(el, e)).catch((err) => toast(err.message, true)); }
+  if (!fn) return;
+  e.preventDefault();
+  const isButton = el.tagName === 'BUTTON';
+  if (isButton) { el.disabled = true; el.setAttribute('aria-busy', 'true'); }
+  Promise.resolve(fn(el, e))
+    .catch((err) => toast(err.message, true))
+    .finally(() => { if (isButton && el.isConnected) { el.disabled = false; el.removeAttribute('aria-busy'); } });
 });
+// Formularios: el botón de enviar muestra que está trabajando y no se envía dos veces
+async function withBusy(form, work) {
+  const btn = form.querySelector('[type="submit"]');
+  if (btn?.getAttribute('aria-busy') === 'true') return;
+  btn?.setAttribute('aria-busy', 'true'); if (btn) btn.disabled = true;
+  try { await work(); } finally { if (btn?.isConnected) { btn.removeAttribute('aria-busy'); btn.disabled = false; } }
+}
 document.addEventListener('change', (e) => {
   const el = e.target.closest('[data-change]');
   if (!el) return;
@@ -229,7 +273,19 @@ async function viewHome() {
        ${canNo ? `<button class="btn btn-quiet btn-big" data-act="answerNo" data-id="${sess.id}">No puedo ir</button>` : ''}`
     : (canNo ? `<button class="btn btn-quiet" data-act="answerNo" data-id="${sess.id}">${mine ? 'Borrarme' : 'No puedo ir'}</button>` : '');
 
-  html += `<section class="hero" aria-labelledby="heroDate">
+  const joined = S.justJoined; S.justJoined = false;
+  if (!introDone()) {
+    html += `<section class="card welcome" aria-labelledby="welcomeTitle">
+      <h2 id="welcomeTitle">Así funciona</h2>
+      <ul>
+        <li>${icon('calendar')}<span><strong>Apúntate cada semana.</strong> La convocatoria se publica el domingo y te apuntas con «Voy».</span></li>
+        <li>${icon('check')}<span><strong>La lista se hace sola.</strong> Entra primero quien no vino la semana anterior; después, por hora de inscripción.</span></li>
+        <li>${icon('clock')}<span><strong>Si no puedes, bórrate a tiempo.</strong> Sin penalización hasta el martes a las 15:00.</span></li>
+      </ul>
+      <div class="row"><button class="btn-primary" data-act="dismissIntro">Entendido</button><a class="btn btn-ghost" href="#/normas">Ver todas las normas</a></div>
+    </section>`;
+  }
+  html += `<section class="hero${joined ? ' just-joined' : ''}" aria-labelledby="heroDate">
     <h1 class="hero-date" id="heroDate">${esc(fmtDate(sess.date))}</h1>
     <div class="hero-meta">
       <span>${icon('clock')} ${esc(sess.start_time)} · llegada ${esc(sess.arrival_time || '21:45')}</span>
@@ -246,7 +302,7 @@ async function viewHome() {
   html += `<div class="card"><div class="row spread" style="margin-bottom:.5rem"><h2 style="margin:0">Quién va · ${total}</h2>
       <span class="chip">${sess.finalized_at ? 'Lista cerrada' : 'En directo'}</span></div>
     ${PRIO_LEGEND}
-    ${renderList(s, me.player.id)}</div>`;
+    ${renderList(s, me.player.id, { flashMe: joined })}</div>`;
   if (s.teams_proposal) html += teamsProposalHtml(s.teams_proposal, me.player.id);
   $app.innerHTML = html;
 }
@@ -275,8 +331,8 @@ function activityList(rows) {
       <small>${esc(fmtDateTime(a.at))}${a.session_date ? ` · entreno del ${esc(fmtShort(a.session_date))}` : ''}</small></span></li>`).join('')}</ul>`;
 }
 
-function renderList(s, meId, { admin = false } = {}) {
-  const row = (e) => `<li class="${e.player_id === meId ? 'me' : ''}">
+function renderList(s, meId, { admin = false, flashMe = false } = {}) {
+  const row = (e) => `<li class="${e.player_id === meId ? `me${flashMe ? ' flash' : ''}` : ''}">
     <span class="pos">${e.position}</span>${prioBadge(e.priority)}
     <span class="name">${esc(e.name)}${e.player_id === meId ? ' <span class="muted">(tú)</span>' : ''}${e.is_coordinator ? ' <span class="chip">Coordinación</span>' : ''}
       <small>${esc(e.reason)}${e.signed_up_at ? ` · ${esc(fmtTime(e.signed_up_at))}` : ''}${e.added_by_admin ? ' · añadido por coordinación' : ''}</small></span>
@@ -297,6 +353,13 @@ function infStatusChip(status) {
       : '<span class="chip danger">Confirmada</span>';
 }
 
+// Bienvenida: se muestra una sola vez por navegador
+function introDone() { try { return localStorage.getItem('f7_intro_done') === '1'; } catch (e) { return true; } }
+actions.dismissIntro = () => {
+  try { localStorage.setItem('f7_intro_done', '1'); } catch (e) { /* sin almacenamiento */ }
+  document.querySelector('.welcome')?.remove();
+};
+
 // Cierra la sesión en este navegador (y en el servidor si se puede)
 function forgetSession() {
   S.token = ''; S.me = null;
@@ -310,8 +373,10 @@ actions.logout = async () => {
 
 actions.answerYes = async (el) => {
   el.disabled = true;
-  try { await api(`/api/sessions/${el.dataset.id}/response`, { method: 'PUT', body: { answer: 'yes' } }); toast('¡Dentro! Te esperamos el miércoles'); }
-  finally { render(); }
+  await api(`/api/sessions/${el.dataset.id}/response`, { method: 'PUT', body: { answer: 'yes' } });
+  S.justJoined = true; S.keepScroll = true;
+  toast('¡Dentro! Te esperamos el miércoles');
+  await render();
 };
 
 actions.answerNo = async (el) => {
@@ -688,17 +753,18 @@ async function viewAdmin(tab = 'convocatoria') {
 }
 
 function adminTabsHtml(tab, ov) {
-  return `<div class="page-head"><h1>Coordinación</h1></div>
+  return `<div class="page-head"><h1>Coordinación</h1>
+    <button class="btn-primary" data-act="newSession">${icon('plus')} Nueva convocatoria</button></div>
   <nav class="tabs" aria-label="Secciones de coordinación">${ADMIN_TABS.map(([k, l]) => `<a href="#/admin/${k}"${k === tab ? ' aria-current="page"' : ''}>${l}${k === 'incidencias' && ov?.pending_infractions ? `<span class="badge" aria-label="${ov.pending_infractions} pendientes">${ov.pending_infractions}</span>` : ''}</a>`).join('')}</nav>`;
 }
 
 function sessionPicker(ov, tab) {
   if (['incidencias', 'jugadores', 'actividad'].includes(tab)) return '';
-  return `<div class="row spread" style="margin-bottom:1rem">
-    <label class="field" style="flex:1 1 14rem">Entreno
+  if (!ov.sessions.length) return '';
+  return `<div style="margin-bottom:1rem;max-width:22rem">
+    <label class="field">Entreno
       <select data-change="pickSession">${ov.sessions.map((s) => `<option value="${s.id}" ${s.id === S.adminSessionId ? 'selected' : ''}>
-      ${esc(fmtShort(s.date))}${s.cancelled ? ' · cancelado' : !s.is_published ? ' · borrador' : ''}${s.id === ov.current_id ? ' · el próximo' : ''}</option>`).join('')}</select></label>
-    <button class="btn-primary" data-act="newSession" style="align-self:flex-end">${icon('plus')} Nueva convocatoria</button></div>`;
+      ${esc(fmtShort(s.date))}${s.cancelled ? ' · cancelado' : !s.is_published ? ' · borrador' : ''}${s.id === ov.current_id ? ' · el próximo' : ''}</option>`).join('')}</select></label></div>`;
 }
 
 actions.pickSession = (el) => {
@@ -744,7 +810,13 @@ actions.newSession = () => {
 };
 
 function noSession(el) {
-  el.innerHTML = '<div class="card empty"><h2>Aún no hay convocatorias</h2><p class="muted">Crea la primera con «Nueva convocatoria». Puedes dejarla en borrador hasta el domingo.</p></div>';
+  el.innerHTML = `<div class="card empty welcome"><h2>Empieza la temporada</h2>
+    <ul>
+      <li>${icon('plus')}<span><strong>Crea la convocatoria</strong> del miércoles con «Nueva convocatoria». Puedes dejarla en borrador hasta el domingo.</span></li>
+      <li>${icon('send')}<span><strong>Publícala</strong> y la verán al momento quienes tengan cuenta.</span></li>
+      <li>${icon('check')}<span><strong>Después del entreno</strong>, pasa lista, apunta los resultados y asigna el material.</span></li>
+    </ul>
+    <button class="btn-primary" data-act="newSession">${icon('plus')} Nueva convocatoria</button></div>`;
 }
 
 // --- Convocatoria ---
@@ -830,16 +902,18 @@ async function adminConvocatoria(el) {
     </div>
   </div>`;
 
-  document.getElementById('sessionForm').onsubmit = async (e) => {
+  document.getElementById('sessionForm').onsubmit = (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
     const body = Object.fromEntries(f.entries());
     body.capacity = Number(body.capacity);
     body.opens_at = body.opens_at ? new Date(body.opens_at).toISOString() : null;
-    try {
-      await api(`/api/admin/sessions/${S.adminSessionId}`, { method: 'PATCH', body });
-      toast('Cambios guardados'); render();
-    } catch (err) { toast(err.message, true); }
+    withBusy(e.target, async () => {
+      try {
+        await api(`/api/admin/sessions/${S.adminSessionId}`, { method: 'PATCH', body });
+        S.keepScroll = true; toast('Cambios guardados'); await render();
+      } catch (err) { toast(err.message, true); }
+    });
   };
 }
 actions.publishSession = async (el) => {
@@ -1037,7 +1111,7 @@ function renderResEditor(el = document.getElementById('adminBody')) {
   const R = S.res;
   const teamOpts = (sel) => R.teams.map((t, i) => `<option value="${i}" ${i === sel ? 'selected' : ''}>${esc(t.name)}</option>`).join('');
   const st = (pid) => R.stats[pid] || { goals: 0, assists: 0, saves: 0, mvp: false };
-  el.innerHTML = `
+  el.innerHTML = `<div class="editor">
   <div class="card"><div class="row spread"><h2 style="margin:0">Equipos</h2>
     <span class="row">${S.detail?.teams_proposal ? '<button class="btn-sm" data-act="useProposedTeams">Usar equipos propuestos</button>' : ''}
     <button class="btn-sm" data-act="resAddTeam">${icon('plus')} Equipo</button></span></div>
@@ -1055,7 +1129,7 @@ function renderResEditor(el = document.getElementById('adminBody')) {
       <input type="number" min="0" value="${m.away_goals}" data-input="resMatch" data-i="${i}" data-f="away_goals" aria-label="Goles visitante">
       <select data-change="resMatch" data-i="${i}" data-f="away">${teamOpts(m.away)}</select>
       <button class="btn btn-ghost btn-icon" data-act="resDelMatch" data-i="${i}" aria-label="Quitar partido">${icon('x')}</button></li>`).join('')}</ul>`
-      : '<p class="muted small">Añade los partidos jugados (si hacéis triangular, uno por cruce).</p>'}</div>
+      : `<p class="muted small">Añade los partidos jugados (en un triangular, uno por cruce)${S.detail?.teams_proposal ? ' o carga los equipos propuestos para empezar con el orden ya hecho' : ''}.</p>`}</div>
 
   <div class="card"><h2>Jugadores</h2>
     <p class="small muted">Asigna cada persona a su equipo y apunta goles, asistencias, paradas y MVP.</p>
@@ -1073,8 +1147,9 @@ function renderResEditor(el = document.getElementById('adminBody')) {
   </div>
 
   <div class="card"><h2>Notas del entreno</h2>
-    <textarea data-input="resNotes" placeholder="Incidencias, lesiones, jugadas destacadas…">${esc(R.notes)}</textarea></div>
-  <div class="row"><button class="btn-primary" data-act="resSave">Guardar resultados</button></div>`;
+    <textarea data-input="resNotes" aria-label="Notas del entreno" placeholder="Lesiones, jugadas destacadas, lo que haya que recordar…">${esc(R.notes)}</textarea></div>
+  <div class="savebar floating"><span class="small muted">${plural(R.matches.length, 'partido', 'partidos')} · ${plural(Object.keys(R.assign).length, 'jugador en equipo', 'jugadores en equipos')}</span>
+    <button class="btn-primary" data-act="resSave">Guardar resultados</button></div></div>`;
   if (!S.players) api('/api/admin/players').then((ps) => { S.players = ps.filter((p) => p.active); renderResEditor(); });
 }
 actions.resTeam = (el) => { S.res.teams[el.dataset.i][el.dataset.f] = el.value; };
@@ -1218,7 +1293,13 @@ async function adminJugadores(el) {
   const roleToggles = (p) => Object.keys(ROLE_LABELS).map((code) => `
     <button type="button" class="toggle" aria-pressed="${p.roles.includes(code)}" ${isCoord ? '' : 'disabled'}
       data-act="toggleRole" data-id="${p.id}" data-role="${code}">${p.roles.includes(code) ? icon('check') : ''}${ROLE_LABELS[code]}</button>`).join('');
+  const signupUrl = `${location.origin}/#/registro`;
+  S.inviteText = `¡Hola! Para apuntarte a los entrenos de Fútbol 7 crea tu cuenta aquí: ${signupUrl}`;
   el.innerHTML = `
+  <div class="card"><h2>Invita al equipo</h2>
+    <p class="small muted">Comparte este enlace en el grupo de WhatsApp. Cada persona crea su cuenta y aparece aquí.</p>
+    <div class="share-box"><code>${esc(signupUrl)}</code><button class="btn-sm" data-act="copyInvite">${icon('copy')} Copiar invitación</button></div>
+  </div>
   <div class="card"><h2>Jugadores · ${players.filter((p) => p.active).length} activos</h2>
     <p class="small muted">Cada persona crea su cuenta. Aquí se asignan los roles: <strong>Coordinación</strong> (todo), <strong>Gestión</strong>
     (convocatorias, asistencia, resultados e incidencias) y <strong>Petos</strong> o <strong>Balones</strong> (material).
@@ -1235,6 +1316,8 @@ async function adminJugadores(el) {
       </div>
     </div>`).join('')}</div>`;
 }
+
+actions.copyInvite = () => copyText(S.inviteText);
 
 // Cambia un rol: se envía el conjunto completo de roles del jugador
 actions.toggleRole = async (el) => {
@@ -1258,6 +1341,12 @@ actions.playerField = async (el) => {
 
 // ---------- Cuentas: entrar y registrarse ----------
 
+function showFormError(msg) {
+  const box = document.getElementById('formError');
+  if (!box) return toast(msg, true);
+  box.textContent = msg; box.hidden = false;
+}
+
 const FIELD = (label, id, type = 'text', extra = '') =>
   `<label class="field">${label}<input id="${id}" type="${type}" ${extra}></label>`;
 
@@ -1267,17 +1356,20 @@ async function viewLogin() {
     <form id="loginForm" class="stack">
       ${FIELD('Email', 'loginEmail', 'email', 'autocomplete="email" required')}
       ${FIELD('Contraseña', 'loginPw', 'password', 'autocomplete="current-password" required')}
-      <button class="btn-primary" type="submit">Entrar</button>
+      <p class="status-box danger form-error" id="formError" role="alert" hidden></p>
+      <button class="btn-primary btn-big" type="submit">Entrar</button>
     </form>
     <p class="small muted" style="margin-top:1rem">¿Aún no tienes cuenta? <a href="#/registro">Regístrate</a></p></div>`;
-  document.getElementById('loginForm').onsubmit = async (e) => {
+  document.getElementById('loginForm').onsubmit = (e) => {
     e.preventDefault();
-    try {
-      const r = await api('/api/auth/login', { method: 'POST', body: {
-        email: document.getElementById('loginEmail').value, password: document.getElementById('loginPw').value } });
-      S.token = r.token; localStorage.setItem('f7_token', r.token); S.me = null;
-      toast(`Hola, ${r.player.name}`); location.hash = '#/';
-    } catch (err) { toast(err.message, true); }
+    withBusy(e.target, async () => {
+      try {
+        const r = await api('/api/auth/login', { method: 'POST', body: {
+          email: document.getElementById('loginEmail').value, password: document.getElementById('loginPw').value } });
+        S.token = r.token; localStorage.setItem('f7_token', r.token); S.me = null;
+        toast(`Hola, ${r.player.name}`); location.hash = '#/';
+      } catch (err) { showFormError(err.message); }
+    });
   };
 }
 
@@ -1296,14 +1388,15 @@ async function viewRegister() {
         ${FIELD('Contraseña (mín. 8)', 'regPw', 'password', 'autocomplete="new-password" minlength="8" required')}
         ${FIELD('Repite la contraseña', 'regPw2', 'password', 'autocomplete="new-password" minlength="8" required')}
       </div>
-      <button class="btn-primary" type="submit">Crear cuenta</button>
+      <p class="status-box danger form-error" id="formError" role="alert" hidden></p>
+      <button class="btn-primary btn-big" type="submit">Crear cuenta</button>
     </form>
     <p class="small muted" style="margin-top:1rem">¿Ya tienes cuenta? <a href="#/entrar">Entrar</a></p></div>`;
-  document.getElementById('regForm').onsubmit = async (e) => {
+  document.getElementById('regForm').onsubmit = (e) => {
     e.preventDefault();
     const pw = document.getElementById('regPw').value;
-    if (pw !== document.getElementById('regPw2').value) return toast('Las contraseñas no coinciden', true);
-    try {
+    if (pw !== document.getElementById('regPw2').value) { showFormError('Las contraseñas no coinciden.'); document.getElementById('regPw2').focus(); return; }
+    withBusy(e.target, async () => { try {
       const r = await api('/api/auth/register', { method: 'POST', body: {
         first_name: document.getElementById('regFirst').value,
         last_name: document.getElementById('regLast').value,
@@ -1312,8 +1405,9 @@ async function viewRegister() {
         password: pw,
       } });
       S.token = r.token; localStorage.setItem('f7_token', r.token); S.me = null;
+      try { localStorage.removeItem('f7_intro_done'); } catch (e2) { /* sin almacenamiento */ }
       toast('Cuenta creada. Te damos la bienvenida a la sección'); location.hash = '#/';
-    } catch (err) { toast(err.message, true); }
+    } catch (err) { showFormError(err.message.endsWith('.') ? err.message : `${err.message}.`); } });
   };
 }
 

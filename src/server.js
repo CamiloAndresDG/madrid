@@ -1,6 +1,7 @@
 const path = require('node:path');
 const crypto = require('node:crypto');
 const express = require('express');
+const compression = require('compression');
 const { db, tx, init } = require('./db');
 const L = require('./logic');
 const A = require('./auth');
@@ -10,8 +11,14 @@ const Audit = require('./audit');
 const PORT = process.env.PORT || 3000;
 
 const app = express();
+app.use(compression());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '..', 'public')));
+// Estáticos: el HTML siempre se revalida; CSS, JS e imágenes se cachean una hora con revalidación por ETag
+app.use(express.static(path.join(__dirname, '..', 'public'), {
+  setHeaders(res, file) {
+    res.setHeader('Cache-Control', file.endsWith('.html') ? 'no-cache' : 'public, max-age=3600, must-revalidate');
+  },
+}));
 
 // ---------- Utilidades ----------
 
