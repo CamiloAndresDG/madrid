@@ -23,7 +23,7 @@ Las contraseñas se guardan con scrypt y las sesiones duran 30 días (solo se gu
 - Al borrarse fuera de plazo se les avisa de la consecuencia y se crea una incidencia *pendiente* para que Coordinación la revise.
 - Pueden consultar la clasificación, los resultados y las normas.
 
-**Coordinación** (`/#/admin`, cuentas con rol de coordinador o gestor):
+**Coordinación** (`/admin`, cuentas con rol de coordinador o gestor):
 - **Publicar convocatorias**: se crean como borrador o publicadas; «Publicar y abrir inscripciones ya» hace que
   aparezcan al momento a los jugadores. Se editan fecha, hora de inicio y de llegada, lugar, plazas, apertura y notas.
 - **Equipos automáticos**: con cada inscripción se reequilibran según las estadísticas (puntos por partido, goles y

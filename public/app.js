@@ -108,35 +108,65 @@ async function loadRules() {
 
 // ---------- Router ----------
 
+// ---------- Rutas (historial del navegador, sin #) ----------
+
+// Ruta actual sin barra final: "/" para el inicio
+function currentPath() {
+  return location.pathname.replace(/\/+$/, '') || '/';
+}
+
+// Cambia de página: actualiza la dirección y pinta la nueva vista
+function go(path, { replace = false } = {}) {
+  const url = path.startsWith('/') ? path : `/${path}`;
+  const changed = url !== location.pathname + location.search;
+  if (changed) history[replace ? 'replaceState' : 'pushState']({}, '', url);
+  setAccountMenu(false);
+  if (changed) render();
+}
+
+// Los enlaces internos cambian de página sin recargar; los externos y las descargas, no
+document.addEventListener('click', (e) => {
+  const a = e.target.closest('a[href]');
+  if (!a || a.target || a.hasAttribute('download') || e.defaultPrevented) return;
+  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  const href = a.getAttribute('href');
+  if (!href.startsWith('/') || href.startsWith('//') || href.startsWith('/api/')) return;
+  e.preventDefault();
+  go(href);
+});
+
+// Enlaces antiguos con #/… (de antes del cambio): se convierten a la dirección normal
+if (location.hash.startsWith('#/')) history.replaceState({}, '', location.hash.slice(1));
+
 const routes = [
-  [/^#\/?$/, viewHome],
-  [/^#\/clasificacion(?:\/(yo))?$/, viewStats],
-  [/^#\/resultados$/, viewResultsList],
-  [/^#\/resultados\/(\d+)$/, viewResultsDetail],
-  [/^#\/normas$/, viewRules],
-  [/^#\/foro$/, viewForum],
-  [/^#\/foro\/nueva$/, () => viewPostEditor(null)],
-  [/^#\/foro\/editar\/(\d+)$/, (id) => viewPostEditor(Number(id))],
-  [/^#\/admin(?:\/(\w+))?$/, viewAdmin],
-  [/^#\/entrar$/, viewLogin],
-  [/^#\/registro$/, viewRegister],
-  [/^#\/salir$/, () => actions.logout()],
-  [/^#\/cuenta$/, viewAccount],
+  [/^\/?$/, viewHome],
+  [/^\/clasificacion(?:\/(yo))?$/, viewStats],
+  [/^\/resultados$/, viewResultsList],
+  [/^\/resultados\/(\d+)$/, viewResultsDetail],
+  [/^\/normas$/, viewRules],
+  [/^\/foro$/, viewForum],
+  [/^\/foro\/nueva$/, () => viewPostEditor(null)],
+  [/^\/foro\/editar\/(\d+)$/, (id) => viewPostEditor(Number(id))],
+  [/^\/admin(?:\/(\w+))?$/, viewAdmin],
+  [/^\/entrar$/, viewLogin],
+  [/^\/registro$/, viewRegister],
+  [/^\/salir$/, () => actions.logout()],
+  [/^\/cuenta$/, viewAccount],
 ];
 
 function renderNav() {
-  const h = location.hash || '#/';
+  const h = currentPath();
   const items = [];
   if (S.token) {
-    items.push(['#/foro', 'Foro', 'megaphone'], ['#/', 'Convocatoria', 'calendar'], ['#/resultados', 'Resultados', 'trophy']);
+    items.push(['/foro', 'Foro', 'megaphone'], ['/', 'Convocatoria', 'calendar'], ['/resultados', 'Resultados', 'trophy']);
   }
-  items.push(['#/normas', 'Normas', 'book']);
-  if (S.token && canManage()) items.push(['#/admin', 'Coordinación', 'shield']);
-  if (!S.token) items.unshift(['#/', 'Inicio', 'calendar']);
+  items.push(['/normas', 'Normas', 'book']);
+  if (S.token && canManage()) items.push(['/admin', 'Coordinación', 'shield']);
+  if (!S.token) items.unshift(['/', 'Inicio', 'calendar']);
   $nav.innerHTML = items.map(([href, label, ic]) => {
     // Resultados incluye la clasificación, así que también se ilumina en esas páginas
-    const active = href === '#/' ? (h === '#/' || h === '#')
-      : href === '#/resultados' ? (h.startsWith('#/resultados') || h.startsWith('#/clasificacion'))
+    const active = href === '/' ? (h === '/')
+      : href === '/resultados' ? (h.startsWith('/resultados') || h.startsWith('/clasificacion'))
         : h.startsWith(href);
     return `<a href="${href}"${active ? ' aria-current="page"' : ''}>${icon(ic)}<span>${label}</span></a>`;
   }).join('');
@@ -155,18 +185,18 @@ function renderAccount() {
     initials.hidden = false;
     $accountBtn.setAttribute('aria-label', `Cuenta de ${pl.name}`);
     $accountMenu.innerHTML = `<div class="account-head"><strong>${esc(pl.name)}</strong><span>${esc(pl.email || '')}</span></div>
-      <a href="#/cuenta" role="menuitem">${icon('user')} Mi cuenta</a>
-      <a href="#/clasificacion/yo" role="menuitem">${icon('chart')} Mi temporada</a>
+      <a href="/cuenta" role="menuitem">${icon('user')} Mi cuenta</a>
+      <a href="/clasificacion/yo" role="menuitem">${icon('chart')} Mi temporada</a>
       <hr>
-      <a href="#/salir" role="menuitem" class="danger">${icon('logout')} Cerrar sesión</a>`;
+      <a href="/salir" role="menuitem" class="danger">${icon('logout')} Cerrar sesión</a>`;
   } else {
     initials.hidden = true;
     $accountBtn.setAttribute('aria-label', 'Cuenta');
     $accountMenu.innerHTML = S.token
-      ? `<a href="#/cuenta" role="menuitem">${icon('user')} Mi cuenta</a><a href="#/salir" role="menuitem" class="danger">${icon('logout')} Cerrar sesión</a>`
+      ? `<a href="/cuenta" role="menuitem">${icon('user')} Mi cuenta</a><a href="/salir" role="menuitem" class="danger">${icon('logout')} Cerrar sesión</a>`
       : `<div class="account-head"><strong>¿Juegas en la sección?</strong><span>Entra o crea tu cuenta para apuntarte.</span></div>
-        <a href="#/entrar" role="menuitem">${icon('user')} Entrar</a>
-        <a href="#/registro" role="menuitem">${icon('plus')} Crear cuenta</a>`;
+        <a href="/entrar" role="menuitem">${icon('user')} Entrar</a>
+        <a href="/registro" role="menuitem">${icon('plus')} Crear cuenta</a>`;
   }
 }
 function setAccountMenu(open) {
@@ -185,14 +215,14 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'ArrowDown') { e.preventDefault(); items[(i + 1) % items.length]?.focus(); }
   else if (e.key === 'ArrowUp') { e.preventDefault(); items[(i - 1 + items.length) % items.length]?.focus(); }
 });
-window.addEventListener('hashchange', () => setAccountMenu(false));
+window.addEventListener('popstate', () => setAccountMenu(false));
 
 let lastRoute = null;
 let renderSeq = 0;
 
 async function render() {
   renderNav();
-  const h = location.hash || '#/';
+  const h = currentPath();
   const route = h.replace(/\/(yo)$/, '');
   const changedRoute = route !== lastRoute;
   lastRoute = route;
@@ -221,7 +251,7 @@ async function render() {
       return;
     }
   }
-  location.hash = '#/';
+  go('/');
 }
 window.addEventListener('offline', () => toast('Sin conexión: los cambios no se guardarán hasta que vuelva', true));
 window.addEventListener('online', () => { toast('Conexión recuperada'); render(); });
@@ -249,7 +279,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) chec
 window.addEventListener('focus', checkVersion);
 setInterval(checkVersion, 3 * 60 * 1000);
 
-window.addEventListener('hashchange', () => {
+window.addEventListener('popstate', () => {
   if (newVersion) { location.reload(); return; } // al cambiar de sección, se carga la versión nueva
   render();
 });
@@ -296,15 +326,15 @@ async function viewHome() {
         <h2>Apúntate a los entrenamientos de los miércoles</h2>
         <p class="muted">Con tu cuenta confirmas si vienes, ves quién va y en qué equipo juegas.</p>
         <div class="row" style="margin-top:1rem">
-          <a class="btn btn-primary" href="#/registro">Crear cuenta</a>
-          <a class="btn" href="#/entrar">Ya tengo cuenta</a></div></div>`;
+          <a class="btn btn-primary" href="/registro">Crear cuenta</a>
+          <a class="btn" href="/entrar">Ya tengo cuenta</a></div></div>`;
     return;
   }
   let me;
   try { me = await api('/api/me'); }
   catch (e) {
     $app.innerHTML = `<div class="card empty"><h2>Tu sesión ha caducado</h2><p class="muted">Vuelve a entrar para seguir.</p>
-      <a class="btn btn-primary" href="#/entrar">Entrar</a></div>`;
+      <a class="btn btn-primary" href="/entrar">Entrar</a></div>`;
     return;
   }
   S.me = me;
@@ -361,7 +391,7 @@ async function viewHome() {
         <li>${icon('check')}<span><strong>La lista se hace sola.</strong> Entra primero quien no vino la semana anterior; después, por hora de inscripción.</span></li>
         <li>${icon('clock')}<span><strong>Si no puedes, bórrate a tiempo.</strong> Sin penalización hasta el martes a las 15:00.</span></li>
       </ul>
-      <div class="row"><button class="btn-primary" data-act="dismissIntro">Entendido</button><a class="btn btn-ghost" href="#/normas">Ver todas las normas</a></div>
+      <div class="row"><button class="btn-primary" data-act="dismissIntro">Entendido</button><a class="btn btn-ghost" href="/normas">Ver todas las normas</a></div>
     </section>`;
   }
   html += `<section class="hero${joined ? ' just-joined' : ''}" aria-labelledby="heroDate">
@@ -447,7 +477,7 @@ function forgetSession() {
 function canManage() { return !!(S.me && S.me.player && S.me.player.can_manage); }
 actions.logout = async () => {
   try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) { /* ya cerrada */ }
-  forgetSession(); toast('Sesión cerrada'); location.hash = '#/';
+  forgetSession(); toast('Sesión cerrada'); go('/');
 };
 
 actions.answerYes = async (el) => {
@@ -522,8 +552,8 @@ function renderDashboard() {
   const sub = S.statsSub;
   $app.innerHTML = `${resultsTabs('clasificacion')}<div class="page-head"><h1>Clasificación</h1></div>
     <nav class="seg-tabs" aria-label="Vista">
-      <a href="#/clasificacion"${sub === 'general' ? ' aria-current="page"' : ''}>General</a>
-      <a href="#/clasificacion/yo"${sub === 'yo' ? ' aria-current="page"' : ''}>Mi temporada</a>
+      <a href="/clasificacion"${sub === 'general' ? ' aria-current="page"' : ''}>General</a>
+      <a href="/clasificacion/yo"${sub === 'yo' ? ' aria-current="page"' : ''}>Mi temporada</a>
     </nav>
     <div id="dashBody"></div>`;
   const body = document.getElementById('dashBody');
@@ -533,7 +563,7 @@ function renderDashboard() {
 let resizeTimer;
 window.addEventListener('resize', () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => { if (location.hash.startsWith('#/clasificacion') && S.dash) renderDashboard(); }, 200);
+  resizeTimer = setTimeout(() => { if (location.pathname.startsWith('/clasificacion') && S.dash) renderDashboard(); }, 200);
 });
 
 const statTile = (label, value, sub = '') =>
@@ -738,12 +768,12 @@ async function viewForum() {
   const posts = await api(`/api/posts?limit=40${filter ? `&category=${filter}` : ''}`);
   S.posts = new Map(posts.map((pst) => [pst.id, pst]));
   $app.innerHTML = `<div class="page-head"><h1>Foro</h1>
-      ${isCoordinator() ? `<a class="btn btn-primary" href="#/foro/nueva">${icon('plus')} Nueva publicación</a>` : ''}</div>
+      ${isCoordinator() ? `<a class="btn btn-primary" href="/foro/nueva">${icon('plus')} Nueva publicación</a>` : ''}</div>
     <nav class="seg-tabs forum-filters" aria-label="Filtrar publicaciones">${POST_FILTERS.map(([k, l]) =>
-      `<a href="#/foro" data-act="forumFilter" data-cat="${k}"${k === filter ? ' aria-current="page"' : ''}>${l}</a>`).join('')}</nav>
+      `<a href="/foro" data-act="forumFilter" data-cat="${k}"${k === filter ? ' aria-current="page"' : ''}>${l}</a>`).join('')}</nav>
     ${posts.length ? posts.map(postHtml).join('') : `<div class="card empty"><h2>${filter ? 'Nada por aquí todavía' : 'El foro está esperando su primera publicación'}</h2>
       <p class="muted">Aquí aparecerán las noticias de la sección, los anuncios y las fotos de después de los entrenos.</p>
-      ${isCoordinator() ? `<a class="btn btn-primary" href="#/foro/nueva">${icon('plus')} Escribir la primera</a>` : ''}</div>`}`;
+      ${isCoordinator() ? `<a class="btn btn-primary" href="/foro/nueva">${icon('plus')} Escribir la primera</a>` : ''}</div>`}`;
   // Fotos: aparecen con un fundido cuando terminan de cargar
   $app.querySelectorAll('img[data-loading]').forEach((img) => {
     if (img.complete) img.removeAttribute('data-loading');
@@ -767,7 +797,7 @@ function postHtml(pst) {
       ${long ? `<button class="btn btn-ghost btn-sm" data-act="expandPost" data-id="${pst.id}" aria-controls="body${pst.id}">Leer más</button>` : ''}` : ''}
     ${gallery}
     <div class="post-foot"><span>Por ${esc(pst.author_name || 'Coordinación')}${pst.session_date ? ` · entreno del ${esc(fmtShort(pst.session_date))}` : ''}${pst.updated_at ? ' · editada' : ''}</span>
-      ${isCoordinator() ? `<span class="row"><a class="btn btn-ghost btn-sm" href="#/foro/editar/${pst.id}">${icon('edit')} Editar</a>
+      ${isCoordinator() ? `<span class="row"><a class="btn btn-ghost btn-sm" href="/foro/editar/${pst.id}">${icon('edit')} Editar</a>
         <button class="btn btn-ghost btn-sm" data-act="togglePin" data-id="${pst.id}">${icon('pushpin')} ${pst.pinned ? 'Desfijar' : 'Fijar'}</button>
         <button class="btn btn-ghost btn-icon" data-act="deletePost" data-id="${pst.id}" aria-label="Eliminar publicación">${icon('trash')}</button></span>` : ''}</div>
   </article>`;
@@ -850,7 +880,7 @@ async function viewPostEditor(id) {
   if (!S.token) return viewLogin();
   if (!S.me) S.me = await api('/api/me');
   if (!isCoordinator()) {
-    $app.innerHTML = `<div class="card empty"><h2>Solo Coordinación puede publicar en el foro</h2><a class="btn" href="#/foro">Volver al foro</a></div>`;
+    $app.innerHTML = `<div class="card empty"><h2>Solo Coordinación puede publicar en el foro</h2><a class="btn" href="/foro">Volver al foro</a></div>`;
     return;
   }
   let post = null;
@@ -860,7 +890,7 @@ async function viewPostEditor(id) {
   }
   const sessions = S.overview?.sessions || (await api('/api/admin/overview').then((ov) => { S.overview = ov; return ov.sessions; }));
   S.editor = { id, keep: post ? post.images.map((im) => im.id) : [], removed: [], added: [] };
-  $app.innerHTML = `<p style="margin:0 0 .5rem"><a href="#/foro">Volver al foro</a></p>
+  $app.innerHTML = `<p style="margin:0 0 .5rem"><a href="/foro">Volver al foro</a></p>
   <div class="page-head"><h1>${id ? 'Editar publicación' : 'Nueva publicación'}</h1></div>
   <form id="postForm" class="card stack" novalidate>
     <label class="field">Título<input name="title" maxlength="140" required value="${esc(post?.title || '')}" placeholder="Ej.: Fotos del entreno del miércoles"></label>
@@ -878,7 +908,7 @@ async function viewPostEditor(id) {
     <p class="status-box danger form-error" id="formError" role="alert" hidden></p>
     <div class="dialog-actions" style="justify-content:flex-start">
       <button class="btn-primary btn-big" type="submit">${icon('send')} ${id ? 'Guardar cambios' : 'Publicar'}</button>
-      <a class="btn btn-ghost" href="#/foro">Cancelar</a></div>
+      <a class="btn btn-ghost" href="/foro">Cancelar</a></div>
   </form>`;
   paintPreviews(post);
   const input = document.getElementById('postFiles');
@@ -941,7 +971,7 @@ function savePost(form) {
         toast('Publicado en el foro');
       }
       E.added.forEach((a) => a.preview && URL.revokeObjectURL(a.preview));
-      S.forumFilter = ''; location.hash = '#/foro';
+      S.forumFilter = ''; go('/foro');
     } catch (err) { showFormError(err.message); }
   });
 }
@@ -951,22 +981,22 @@ function savePost(form) {
 // Pestañas de la sección Resultados: partidos y clasificación
 function resultsTabs(current) {
   return `<nav class="tabs" aria-label="Resultados y clasificación">
-    <a href="#/resultados"${current === 'partidos' ? ' aria-current="page"' : ''}>Partidos</a>
-    <a href="#/clasificacion"${current === 'clasificacion' ? ' aria-current="page"' : ''}>Clasificación</a></nav>`;
+    <a href="/resultados"${current === 'partidos' ? ' aria-current="page"' : ''}>Partidos</a>
+    <a href="/clasificacion"${current === 'clasificacion' ? ' aria-current="page"' : ''}>Clasificación</a></nav>`;
 }
 
 async function viewResultsList() {
   if (!S.token) return viewHome();
   const sessions = (await api('/api/sessions')).filter((s) => s.has_results);
   $app.innerHTML = `<div class="page-head"><h1>Resultados</h1></div>${resultsTabs('partidos')}${sessions.length ? `<div class="card">${sessions.map((s) => `
-    <a class="link-row" href="#/resultados/${s.id}"><span><strong>${esc(fmtDate(s.date))}</strong>
+    <a class="link-row" href="/resultados/${s.id}"><span><strong>${esc(fmtDate(s.date))}</strong>
       <span class="small muted"> · ${plural(s.yes_count, 'apuntado', 'apuntados')}</span></span>${icon('chevron')}</a>`).join('')}
     </div>` : '<div class="card empty"><h2>Aún no hay resultados</h2><p class="muted">Aparecerán aquí cuando Coordinación los apunte al terminar cada entreno.</p></div>'}`;
 }
 
 async function viewResultsDetail(id) {
   const r = await api(`/api/sessions/${id}/results`);
-  $app.innerHTML = `<p style="margin:0 0 .5rem"><a href="#/resultados">Todos los resultados</a></p>
+  $app.innerHTML = `<p style="margin:0 0 .5rem"><a href="/resultados">Todos los resultados</a></p>
     <div class="page-head"><h1>${esc(fmtDate(r.session.date))}</h1></div>${renderResults(r)}`;
 }
 
@@ -1037,10 +1067,10 @@ async function viewAdmin(tab = 'convocatoria') {
   if (!canManage()) {
     $app.innerHTML = `<div class="card empty"><h2>Esta sección es para Coordinación</h2>
       <p class="muted">Si te toca ayudar con las convocatorias, pide a Coordinación el rol de gestión.</p>
-      <a class="btn" href="#/">Volver a la convocatoria</a></div>`;
+      <a class="btn" href="/">Volver a la convocatoria</a></div>`;
     return;
   }
-  if (tab === 'clasificacion') { location.hash = '#/clasificacion'; return; }
+  if (tab === 'clasificacion') { go('/clasificacion'); return; }
   const ov = await api('/api/admin/overview');
   S.overview = ov;
   // Sin elección explícita: asistencia, resultados y material van sobre el último entreno jugado;
@@ -1055,7 +1085,7 @@ async function viewAdmin(tab = 'convocatoria') {
     convocatoria: adminConvocatoria, asistencia: adminAsistencia, resultados: adminResultados, material: adminMaterial,
     incidencias: adminIncidencias, jugadores: adminJugadores, actividad: adminActividad,
   }[tab];
-  if (!fn) { location.hash = '#/admin'; return; }
+  if (!fn) { go('/admin'); return; }
   $app.innerHTML = head + '<div id="adminBody"><p class="muted">Cargando…</p></div>';
   const body = document.getElementById('adminBody');
   if (body) await fn(body);
@@ -1064,7 +1094,7 @@ async function viewAdmin(tab = 'convocatoria') {
 function adminTabsHtml(tab, ov) {
   return `<div class="page-head"><h1>Coordinación</h1>
     <button class="btn-primary" data-act="newSession">${icon('plus')} Nueva convocatoria</button></div>
-  <nav class="tabs" aria-label="Secciones de coordinación">${ADMIN_TABS.map(([k, l]) => `<a href="#/admin/${k}"${k === tab ? ' aria-current="page"' : ''}>${l}${k === 'incidencias' && ov?.pending_infractions ? `<span class="badge" aria-label="${ov.pending_infractions} pendientes">${ov.pending_infractions}</span>` : ''}</a>`).join('')}</nav>`;
+  <nav class="tabs" aria-label="Secciones de coordinación">${ADMIN_TABS.map(([k, l]) => `<a href="/admin/${k}"${k === tab ? ' aria-current="page"' : ''}>${l}${k === 'incidencias' && ov?.pending_infractions ? `<span class="badge" aria-label="${ov.pending_infractions} pendientes">${ov.pending_infractions}</span>` : ''}</a>`).join('')}</nav>`;
 }
 
 function sessionPicker(ov, tab) {
@@ -1113,7 +1143,7 @@ actions.newSession = () => {
         publish: pub !== 'draft', open_now: pub === 'open',
       } });
       S.adminSessionId = r.id; S.sessionPicked = true; sessionStorage.setItem('f7_admin_session', r.id);
-      toast(pub === 'draft' ? 'Borrador guardado' : 'Convocatoria publicada'); location.hash = '#/admin/convocatoria'; render();
+      toast(pub === 'draft' ? 'Borrador guardado' : 'Convocatoria publicada'); go('/admin/convocatoria'); render();
     } catch (e) { toast(e.message, true); }
   };
 };
@@ -1206,7 +1236,7 @@ async function adminConvocatoria(el) {
       <div class="card"><h2>Sin responder · ${d.sin_responder.length}</h2><p class="small">${d.sin_responder.map((p) => esc(p.name)).join(', ') || 'Ha respondido todo el mundo.'}</p>
         ${d.no_van.length ? `<h3>No van</h3><ul class="list">${d.no_van.map((n) => `<li><span class="name">${esc(n.name)}<small>${esc(n.cancel_reason || '')} ${esc(fmtTime(n.updated_at))}</small></span></li>`).join('')}</ul>` : ''}
       </div>
-      ${d.infractions.length ? `<div class="card"><h2>Incidencias de este entreno</h2><ul class="list">${d.infractions.map((i) => `<li><span class="name">${esc(i.name)}<small>${esc(S.rules?.infraction_types[i.type]?.label || i.type)}</small></span>${infStatusChip(i.status)}</li>`).join('')}</ul><a href="#/admin/incidencias" class="small">Revisar incidencias</a></div>` : ''}
+      ${d.infractions.length ? `<div class="card"><h2>Incidencias de este entreno</h2><ul class="list">${d.infractions.map((i) => `<li><span class="name">${esc(i.name)}<small>${esc(S.rules?.infraction_types[i.type]?.label || i.type)}</small></span>${infStatusChip(i.status)}</li>`).join('')}</ul><a href="/admin/incidencias" class="small">Revisar incidencias</a></div>` : ''}
       <div class="card"><h2>Actividad de esta convocatoria</h2>${activityList(d.activity)}</div>
     </div>
   </div>`;
@@ -1524,7 +1554,7 @@ actions.resSave = async () => {
     notes: R.notes,
   };
   await api(`/api/admin/sessions/${S.adminSessionId}/results`, { method: 'PUT', body });
-  S.res = null; toast('Resultados guardados'); location.hash = `#/resultados/${S.adminSessionId}`;
+  S.res = null; toast('Resultados guardados'); go(`/resultados/${S.adminSessionId}`);
 };
 
 // --- Incidencias ---
@@ -1604,7 +1634,7 @@ async function adminJugadores(el) {
   const roleToggles = (p) => Object.keys(ROLE_LABELS).map((code) => `
     <button type="button" class="toggle" aria-pressed="${p.roles.includes(code)}" ${isCoord ? '' : 'disabled'}
       data-act="toggleRole" data-id="${p.id}" data-role="${code}">${p.roles.includes(code) ? icon('check') : ''}${ROLE_LABELS[code]}</button>`).join('');
-  const signupUrl = `${location.origin}/#/registro`;
+  const signupUrl = `${location.origin}/registro`;
   S.inviteText = `¡Hola! Para apuntarte a los entrenos de Fútbol 7 crea tu cuenta aquí: ${signupUrl}`;
   el.innerHTML = `
   <div class="card"><h2>Invita al equipo</h2>
@@ -1684,7 +1714,7 @@ async function viewAccount() {
       <div class="card"><h2>Sesión</h2>
         ${pl.roles.length ? `<p class="small">Tus roles: ${pl.roles.map((r) => `<span class="chip brand">${ROLE_NAMES[r] || r}</span>`).join(' ')}</p>` : ''}
         <div class="row">
-          <a class="btn" href="#/salir">${icon('logout')} Cerrar sesión</a>
+          <a class="btn" href="/salir">${icon('logout')} Cerrar sesión</a>
           <button class="btn-danger" data-act="logoutAll">Cerrar en todos los dispositivos</button>
         </div></div>
     </div>
@@ -1719,7 +1749,7 @@ async function viewAccount() {
 actions.logoutAll = async () => {
   if (!await confirmDialog({ title: '¿Cerrar sesión en todos los dispositivos?', body: 'Tendrás que volver a entrar en el móvil, el ordenador y donde la tengas abierta.', confirm: 'Cerrar en todos', danger: true })) return;
   await api('/api/auth/logout-all', { method: 'POST' });
-  forgetSession(); toast('Sesión cerrada en todos los dispositivos'); location.hash = '#/entrar';
+  forgetSession(); toast('Sesión cerrada en todos los dispositivos'); go('/entrar');
 };
 
 // ---------- Cuentas: entrar y registrarse ----------
@@ -1742,7 +1772,7 @@ async function viewLogin() {
       <p class="status-box danger form-error" id="formError" role="alert" hidden></p>
       <button class="btn-primary btn-big" type="submit">Entrar</button>
     </form>
-    <p class="small muted" style="margin-top:1rem">¿Aún no tienes cuenta? <a href="#/registro">Regístrate</a></p></div>`;
+    <p class="small muted" style="margin-top:1rem">¿Aún no tienes cuenta? <a href="/registro">Regístrate</a></p></div>`;
   document.getElementById('loginForm').onsubmit = (e) => {
     e.preventDefault();
     withBusy(e.target, async () => {
@@ -1750,7 +1780,7 @@ async function viewLogin() {
         const r = await api('/api/auth/login', { method: 'POST', body: {
           email: document.getElementById('loginEmail').value, password: document.getElementById('loginPw').value } });
         S.token = r.token; localStorage.setItem('f7_token', r.token); S.me = null;
-        toast(`Hola, ${r.player.name}`); location.hash = '#/';
+        toast(`Hola, ${r.player.name}`); go('/');
       } catch (err) { showFormError(err.message); }
     });
   };
@@ -1774,7 +1804,7 @@ async function viewRegister() {
       <p class="status-box danger form-error" id="formError" role="alert" hidden></p>
       <button class="btn-primary btn-big" type="submit">Crear cuenta</button>
     </form>
-    <p class="small muted" style="margin-top:1rem">¿Ya tienes cuenta? <a href="#/entrar">Entrar</a></p></div>`;
+    <p class="small muted" style="margin-top:1rem">¿Ya tienes cuenta? <a href="/entrar">Entrar</a></p></div>`;
   document.getElementById('regForm').onsubmit = (e) => {
     e.preventDefault();
     const pw = document.getElementById('regPw').value;
@@ -1789,7 +1819,7 @@ async function viewRegister() {
       } });
       S.token = r.token; localStorage.setItem('f7_token', r.token); S.me = null;
       try { localStorage.removeItem('f7_intro_done'); } catch (e2) { /* sin almacenamiento */ }
-      toast('Cuenta creada. Te damos la bienvenida a la sección'); location.hash = '#/';
+      toast('Cuenta creada. Te damos la bienvenida a la sección'); go('/');
     } catch (err) { showFormError(err.message.endsWith('.') ? err.message : `${err.message}.`); } });
   };
 }
@@ -1812,7 +1842,7 @@ document.getElementById('themeToggle').addEventListener('click', () => {
   try { localStorage.setItem('f7_theme', next); } catch (e) { /* sin almacenamiento: solo esta visita */ }
   paintThemeToggle();
   // Los gráficos leen sus colores al pintarse
-  if (location.hash.startsWith('#/clasificacion') && S.dash) renderDashboard();
+  if (location.pathname.startsWith('/clasificacion') && S.dash) renderDashboard();
 });
 paintThemeToggle();
 
