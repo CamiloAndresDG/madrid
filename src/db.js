@@ -180,10 +180,39 @@ CREATE TABLE IF NOT EXISTS audit_log (
   summary TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at DESC);
+
+-- Foro: noticias, anuncios y fotos post-entreno (solo Coordinación publica)
+CREATE TABLE IF NOT EXISTS posts (
+  id SERIAL PRIMARY KEY,
+  title TEXT NOT NULL CHECK (length(trim(title)) BETWEEN 1 AND 140),
+  body TEXT,
+  category TEXT NOT NULL DEFAULT 'noticia' CHECK (category IN ('noticia','anuncio','fotos')),
+  pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0,1)),
+  session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+  author_id INTEGER REFERENCES players(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_posts_order ON posts(pinned DESC, created_at DESC);
+
+-- Fotos en la base de datos (reducidas en el navegador); id aleatorio = enlace no adivinable
+CREATE TABLE IF NOT EXISTS post_images (
+  id TEXT PRIMARY KEY,
+  post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL DEFAULT 0,
+  mime TEXT NOT NULL CHECK (mime IN ('image/jpeg','image/png','image/webp')),
+  width INTEGER,
+  height INTEGER,
+  bytes INTEGER NOT NULL CHECK (bytes > 0 AND bytes <= 3000000),
+  data BYTEA NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_post_images_post ON post_images(post_id, position);
 `;
 
 const TABLES = ['players', 'roles', 'player_roles', 'auth_sessions', 'sessions', 'responses', 'attendance', 'infractions',
-  'teams', 'team_players', 'matches', 'player_stats', 'equipment', 'equipment_assignments', 'audit_log'];
+  'teams', 'team_players', 'matches', 'player_stats', 'equipment', 'equipment_assignments', 'audit_log',
+  'posts', 'post_images'];
 
 // Supabase expone las tablas de "public" por su API REST: activar RLS sin políticas
 // las cierra a esa API; el servidor entra como propietario de las tablas y no le afecta.

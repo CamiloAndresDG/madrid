@@ -7,12 +7,13 @@ const L = require('./logic');
 const A = require('./auth');
 const T = require('./teams');
 const Audit = require('./audit');
+const F = require('./forum');
 
 const PORT = process.env.PORT || 3000;
 
 const app = express();
 app.use(compression());
-app.use(express.json());
+app.use(express.json({ limit: '25mb' })); // el foro envía fotos (ya reducidas en el navegador)
 // Estáticos: el HTML siempre se revalida; CSS, JS e imágenes se cachean una hora con revalidación por ETag
 app.use(express.static(path.join(__dirname, '..', 'public'), {
   setHeaders(res, file) {
@@ -282,6 +283,22 @@ app.get('/api/stats', requireAny, wrap(async (req) => ({
 
 // Panel de temporada: el del grupo y el del jugador que pregunta
 app.get('/api/dashboard', requirePlayer, wrap(async (req) => L.dashboard(req.player.id)));
+
+// ---------- Foro ----------
+
+app.get('/api/posts', requirePlayer, wrap(async (req) => F.list({
+  category: req.query.category || null, limit: req.query.limit, before: req.query.before || null,
+})));
+
+// Fotos: el id es aleatorio y no adivinable, así que se pueden mostrar en <img> sin sesión.
+// No cambian nunca: caché larga.
+app.get('/api/images/:id', wrap(async (req, res) => {
+  if (!/^[a-f0-9]{32}$/.test(req.params.id)) throw new HttpError(404, 'Foto no encontrada');
+  const img = await db.get('SELECT mime, data FROM post_images WHERE id = $1', [req.params.id]);
+  if (!img) throw new HttpError(404, 'Foto no encontrada');
+  res.set({ 'Content-Type': img.mime, 'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' });
+  res.send(img.data);
+}));
 
 // Material: quién se lleva cada cosa (lo ve todo el equipo)
 app.get('/api/equipment', requirePlayer, wrap(async () => equipmentHolders()));
@@ -781,6 +798,66 @@ admin.post('/equipment/:id/assign', wrap(async (req) => {
     await Audit.audit(c, req.player, { action: 'equipment.assign', entity: 'equipment', entityId: id, sessionId: s?.id || null,
       summary: holder ? `asignó a ${holder} los «${item.name}»${after}` : `marcó los «${item.name}» como guardados en el club${after}` });
     return r.id;
+  });
+  return { ok: true };
+}));
+
+// ---------- Foro (solo Coordinación publica) ----------
+
+admin.post('/posts', requireRole(), wrap(async (req) => {
+  const input = F.cleanPost(req.body || {});
+  const images = F.decodeImages(req.body?.images || []);
+  if (images.length > F.MAX_IMAGES) throw new HttpError(400, `Máximo ${F.MAX_IMAGES} fotos por publicación`);
+  if (input.category === 'fotos' && !images.length) throw new HttpError(400, 'Una publicación de fotos necesita al menos una foto');
+  const id = await tx(async (c) => {
+    const r = await c.get(`INSERT INTO posts (title, body, category, pinned, session_id, author_id, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+    [input.title, input.body, input.category, input.pinned || 0, input.session_id || null, req.player.id, nowIso()]);
+    await F.insertImages(c, r.id, images);
+    await Audit.audit(c, req.player, { action: 'post.create', entity: 'post', entityId: r.id,
+      summary: `publicó en el foro «${input.title}» (${F.CATEGORIES[input.category].toLowerCase()}${images.length ? `, ${images.length} foto${images.length === 1 ? '' : 's'}` : ''})` });
+    return r.id;
+  });
+  return { id };
+}));
+
+admin.patch('/posts/:id', requireRole(), wrap(async (req) => {
+  const id = Number(req.params.id);
+  const post = await db.get('SELECT * FROM posts WHERE id = $1', [id]);
+  if (!post) throw new HttpError(404, 'Publicación no encontrada');
+  const input = F.cleanPost(req.body || {}, { partial: true });
+  const added = F.decodeImages(req.body?.add_images || []);
+  const removeIds = Array.isArray(req.body?.remove_images) ? req.body.remove_images.map(String) : [];
+  const current = (await db.get('SELECT COUNT(*)::int AS n FROM post_images WHERE post_id = $1', [id])).n;
+  if (current - removeIds.length + added.length > F.MAX_IMAGES) throw new HttpError(400, `Máximo ${F.MAX_IMAGES} fotos por publicación`);
+  await tx(async (c) => {
+    const fields = Object.entries(input);
+    for (const [k, v] of fields) await c.run(`UPDATE posts SET ${k} = $1 WHERE id = $2`, [v, id]);
+    if (removeIds.length) await c.run('DELETE FROM post_images WHERE post_id = $1 AND id = ANY($2::text[])', [id, removeIds]);
+    if (added.length) {
+      const maxPos = (await c.get('SELECT COALESCE(MAX(position), -1)::int AS m FROM post_images WHERE post_id = $1', [id])).m;
+      await F.insertImages(c, id, added, maxPos + 1);
+    }
+    await c.run('UPDATE posts SET updated_at = $1 WHERE id = $2', [nowIso(), id]);
+    const what = [
+      fields.some(([k]) => k !== 'pinned') && 'editó',
+      'pinned' in input && input.pinned !== post.pinned && (input.pinned ? 'fijó' : 'desfijó'),
+      added.length && `añadió ${added.length} foto${added.length === 1 ? '' : 's'} a`,
+      removeIds.length && `quitó ${removeIds.length} foto${removeIds.length === 1 ? '' : 's'} de`,
+    ].filter(Boolean);
+    await Audit.audit(c, req.player, { action: 'post.update', entity: 'post', entityId: id,
+      summary: `${what.join(', ') || 'editó'} la publicación «${input.title || post.title}»` });
+  });
+  return { ok: true };
+}));
+
+admin.delete('/posts/:id', requireRole(), wrap(async (req) => {
+  const id = Number(req.params.id);
+  const post = await db.get('SELECT title FROM posts WHERE id = $1', [id]);
+  if (!post) throw new HttpError(404, 'Publicación no encontrada');
+  await tx(async (c) => {
+    await c.run('DELETE FROM posts WHERE id = $1', [id]);
+    await Audit.audit(c, req.player, { action: 'post.delete', entity: 'post', entityId: id, summary: `eliminó la publicación «${post.title}» del foro` });
   });
   return { ok: true };
 }));

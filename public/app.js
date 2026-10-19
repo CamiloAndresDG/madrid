@@ -114,6 +114,9 @@ const routes = [
   [/^#\/resultados$/, viewResultsList],
   [/^#\/resultados\/(\d+)$/, viewResultsDetail],
   [/^#\/normas$/, viewRules],
+  [/^#\/foro$/, viewForum],
+  [/^#\/foro\/nueva$/, () => viewPostEditor(null)],
+  [/^#\/foro\/editar\/(\d+)$/, (id) => viewPostEditor(Number(id))],
   [/^#\/admin(?:\/(\w+))?$/, viewAdmin],
   [/^#\/entrar$/, viewLogin],
   [/^#\/registro$/, viewRegister],
@@ -124,7 +127,7 @@ function renderNav() {
   const h = location.hash || '#/';
   const items = [];
   if (S.token) {
-    items.push(['#/', 'Convocatoria', 'calendar'], ['#/clasificacion', 'Clasificación', 'chart'], ['#/resultados', 'Resultados', 'trophy']);
+    items.push(['#/', 'Convocatoria', 'calendar'], ['#/foro', 'Foro', 'megaphone'], ['#/clasificacion', 'Clasificación', 'chart'], ['#/resultados', 'Resultados', 'trophy']);
   }
   items.push(['#/normas', 'Normas', 'book']);
   if (S.token && canManage()) items.push(['#/admin', 'Coordinación', 'shield']);
@@ -645,6 +648,228 @@ function renderPersonal(body) {
   });
 }
 
+// ---------- Foro ----------
+
+const POST_CATS = { noticia: 'Noticia', anuncio: 'Anuncio', fotos: 'Fotos' };
+const POST_FILTERS = [['', 'Todo'], ['noticia', 'Noticias'], ['anuncio', 'Anuncios'], ['fotos', 'Fotos']];
+const isCoordinator = () => !!(S.me && S.me.player && S.me.player.roles.includes('coordinador'));
+const fmtWhen = (iso) => new Intl.DateTimeFormat('es-ES', { timeZone: TZ, day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }).format(new Date(iso));
+
+async function viewForum() {
+  if (!S.token) return viewHome();
+  if (!S.me) S.me = await api('/api/me');
+  const filter = S.forumFilter || '';
+  const posts = await api(`/api/posts?limit=40${filter ? `&category=${filter}` : ''}`);
+  S.posts = new Map(posts.map((pst) => [pst.id, pst]));
+  $app.innerHTML = `<div class="page-head"><h1>Foro</h1>
+      ${isCoordinator() ? `<a class="btn btn-primary" href="#/foro/nueva">${icon('plus')} Nueva publicación</a>` : ''}</div>
+    <nav class="seg-tabs forum-filters" aria-label="Filtrar publicaciones">${POST_FILTERS.map(([k, l]) =>
+      `<a href="#/foro" data-act="forumFilter" data-cat="${k}"${k === filter ? ' aria-current="page"' : ''}>${l}</a>`).join('')}</nav>
+    ${posts.length ? posts.map(postHtml).join('') : `<div class="card empty"><h2>${filter ? 'Nada por aquí todavía' : 'El foro está esperando su primera publicación'}</h2>
+      <p class="muted">Aquí aparecerán las noticias de la sección, los anuncios y las fotos de después de los entrenos.</p>
+      ${isCoordinator() ? `<a class="btn btn-primary" href="#/foro/nueva">${icon('plus')} Escribir la primera</a>` : ''}</div>`}`;
+  // Fotos: aparecen con un fundido cuando terminan de cargar
+  $app.querySelectorAll('img[data-loading]').forEach((img) => {
+    if (img.complete) img.removeAttribute('data-loading');
+    else img.addEventListener('load', () => img.removeAttribute('data-loading'), { once: true });
+  });
+}
+
+function postHtml(pst) {
+  const n = pst.images.length;
+  const shown = pst.images.slice(0, 4);
+  const long = (pst.body || '').length > 600;
+  const gallery = n ? `<div class="gallery g-${n > 3 ? 'many' : n}">${shown.map((img, i) => `
+    <button class="g-item" data-act="openImage" data-post="${pst.id}" data-i="${i}" aria-label="Ver foto ${i + 1} de ${n}">
+      <img src="/api/images/${img.id}" alt="" loading="lazy" decoding="async" data-loading${img.width ? ` width="${img.width}" height="${img.height}"` : ''}>
+      ${i === 3 && n > 4 ? `<span class="g-more">+${n - 4}</span>` : ''}</button>`).join('')}</div>` : '';
+  return `<article class="card post${pst.pinned ? ' is-pinned' : ''}" aria-labelledby="post${pst.id}">
+    <div class="post-meta"><span class="chip cat-${pst.category}">${POST_CATS[pst.category]}</span>
+      ${pst.pinned ? `<span>${icon('pushpin')} Fijada</span>` : ''}<time datetime="${esc(pst.created_at)}">${esc(fmtWhen(pst.created_at))}</time></div>
+    <h2 id="post${pst.id}">${esc(pst.title)}</h2>
+    ${pst.body ? `<p class="post-body${long ? ' clamped' : ''}" id="body${pst.id}">${esc(pst.body)}</p>
+      ${long ? `<button class="btn btn-ghost btn-sm" data-act="expandPost" data-id="${pst.id}" aria-controls="body${pst.id}">Leer más</button>` : ''}` : ''}
+    ${gallery}
+    <div class="post-foot"><span>Por ${esc(pst.author_name || 'Coordinación')}${pst.session_date ? ` · entreno del ${esc(fmtShort(pst.session_date))}` : ''}${pst.updated_at ? ' · editada' : ''}</span>
+      ${isCoordinator() ? `<span class="row"><a class="btn btn-ghost btn-sm" href="#/foro/editar/${pst.id}">${icon('edit')} Editar</a>
+        <button class="btn btn-ghost btn-sm" data-act="togglePin" data-id="${pst.id}">${icon('pushpin')} ${pst.pinned ? 'Desfijar' : 'Fijar'}</button>
+        <button class="btn btn-ghost btn-icon" data-act="deletePost" data-id="${pst.id}" aria-label="Eliminar publicación">${icon('trash')}</button></span>` : ''}</div>
+  </article>`;
+}
+
+actions.forumFilter = (el) => { S.forumFilter = el.dataset.cat; S.keepScroll = true; viewForum(); };
+actions.expandPost = (el) => {
+  document.getElementById(`body${el.dataset.id}`)?.classList.remove('clamped');
+  el.remove();
+};
+actions.togglePin = async (el) => {
+  const pst = S.posts.get(Number(el.dataset.id));
+  await api(`/api/admin/posts/${pst.id}`, { method: 'PATCH', body: { pinned: !pst.pinned } });
+  toast(pst.pinned ? 'Publicación desfijada' : 'Publicación fijada arriba'); S.keepScroll = true; await viewForum();
+};
+actions.deletePost = async (el) => {
+  const pst = S.posts.get(Number(el.dataset.id));
+  if (!await confirmDialog({ title: `¿Eliminar «${pst.title}»?`, body: 'Se borran también sus fotos. No se puede deshacer.', confirm: 'Eliminar', danger: true })) return;
+  await api(`/api/admin/posts/${pst.id}`, { method: 'DELETE' });
+  toast('Publicación eliminada'); S.keepScroll = true; await viewForum();
+};
+
+// Visor de fotos a pantalla completa (flechas del teclado y botones)
+actions.openImage = (el) => {
+  const pst = S.posts.get(Number(el.dataset.post));
+  S.lightbox = { imgs: pst.images, i: Number(el.dataset.i), title: pst.title };
+  paintLightbox();
+  $dialog.className = 'lightbox';
+  $dialog.showModal();
+  $dialog.onclose = () => { $dialog.className = ''; S.lightbox = null; };
+};
+function paintLightbox() {
+  const L = S.lightbox;
+  const img = L.imgs[L.i];
+  $dialog.innerHTML = `<figure>
+    <img src="/api/images/${img.id}" alt="Foto ${L.i + 1} de ${L.imgs.length} de «${esc(L.title)}»">
+    <figcaption><span>${esc(L.title)}</span><span>${L.i + 1} / ${L.imgs.length}</span></figcaption></figure>
+    <button class="icon-btn lb-close" data-act="closeDialog" aria-label="Cerrar">${icon('x')}</button>
+    ${L.imgs.length > 1 ? `<button class="icon-btn lb-nav lb-prev" data-act="lightboxStep" data-step="-1" aria-label="Foto anterior">${icon('chevron-left')}</button>
+      <button class="icon-btn lb-nav lb-next" data-act="lightboxStep" data-step="1" aria-label="Foto siguiente">${icon('chevron')}</button>` : ''}`;
+}
+actions.lightboxStep = (el) => {
+  const L = S.lightbox; if (!L) return;
+  L.i = (L.i + Number(el.dataset.step) + L.imgs.length) % L.imgs.length;
+  paintLightbox();
+};
+actions.closeDialog = () => $dialog.close();
+document.addEventListener('keydown', (e) => {
+  if (!S.lightbox || !$dialog.open) return;
+  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+    S.lightbox.i = (S.lightbox.i + (e.key === 'ArrowRight' ? 1 : -1) + S.lightbox.imgs.length) % S.lightbox.imgs.length;
+    paintLightbox();
+  }
+});
+
+// Reduce una foto en el navegador (lado largo 1600 px, JPEG): sube rápido y ocupa poco
+async function shrinkImage(file, max = 1600, quality = 0.82) {
+  let source;
+  try { source = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
+  catch (e) {
+    source = await new Promise((resolve, reject) => {
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = () => reject(new Error(`No se ha podido leer «${file.name}». Prueba con una foto JPG o PNG.`));
+      im.src = URL.createObjectURL(file);
+    });
+  }
+  const w = source.width, h = source.height;
+  const scale = Math.min(1, max / Math.max(w, h));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
+  canvas.getContext('2d').drawImage(source, 0, 0, canvas.width, canvas.height);
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
+  if (!blob) throw new Error(`No se ha podido preparar «${file.name}».`);
+  const data = await new Promise((resolve) => { const r = new FileReader(); r.onload = () => resolve(r.result); r.readAsDataURL(blob); });
+  return { data, width: canvas.width, height: canvas.height, preview: URL.createObjectURL(blob) };
+}
+
+async function viewPostEditor(id) {
+  if (!S.token) return viewLogin();
+  if (!S.me) S.me = await api('/api/me');
+  if (!isCoordinator()) {
+    $app.innerHTML = `<div class="card empty"><h2>Solo Coordinación puede publicar en el foro</h2><a class="btn" href="#/foro">Volver al foro</a></div>`;
+    return;
+  }
+  let post = null;
+  if (id) {
+    post = S.posts?.get(id) || (await api('/api/posts?limit=100')).find((x) => x.id === id);
+    if (!post) throw new Error('Esta publicación ya no existe.');
+  }
+  const sessions = S.overview?.sessions || (await api('/api/admin/overview').then((ov) => { S.overview = ov; return ov.sessions; }));
+  S.editor = { id, keep: post ? post.images.map((im) => im.id) : [], removed: [], added: [] };
+  $app.innerHTML = `<p style="margin:0 0 .5rem"><a href="#/foro">Volver al foro</a></p>
+  <div class="page-head"><h1>${id ? 'Editar publicación' : 'Nueva publicación'}</h1></div>
+  <form id="postForm" class="card stack" novalidate>
+    <label class="field">Título<input name="title" maxlength="140" required value="${esc(post?.title || '')}" placeholder="Ej.: Fotos del entreno del miércoles"></label>
+    <div class="grid grid-2" style="gap:.75rem">
+      <label class="field">Tipo<select name="category">${Object.entries(POST_CATS).map(([k, l]) => `<option value="${k}" ${(post?.category || 'noticia') === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label class="field">Entreno relacionado (opcional)<select name="session_id"><option value="">Ninguno</option>${sessions.map((x) => `<option value="${x.id}" ${post?.session_id === x.id ? 'selected' : ''}>${esc(fmtShort(x.date))}</option>`).join('')}</select></label>
+    </div>
+    <label class="field">Texto<textarea name="body" rows="8" maxlength="10000" placeholder="Cuenta lo que quieras compartir con la sección">${esc(post?.body || '')}</textarea></label>
+    <div class="stack">
+      <label class="uploader" id="uploader">${icon('image')}<strong>Añadir fotos</strong><span class="small">Hasta 10. Se reducen antes de subir.</span>
+        <input type="file" id="postFiles" accept="image/*" multiple></label>
+      <div class="previews" id="previews"></div>
+    </div>
+    <label><input type="checkbox" name="pinned" ${post?.pinned ? 'checked' : ''}> Fijar arriba del foro</label>
+    <p class="status-box danger form-error" id="formError" role="alert" hidden></p>
+    <div class="dialog-actions" style="justify-content:flex-start">
+      <button class="btn-primary btn-big" type="submit">${icon('send')} ${id ? 'Guardar cambios' : 'Publicar'}</button>
+      <a class="btn btn-ghost" href="#/foro">Cancelar</a></div>
+  </form>`;
+  paintPreviews(post);
+  const input = document.getElementById('postFiles');
+  const zone = document.getElementById('uploader');
+  input.addEventListener('change', () => { addFiles([...input.files], post); input.value = ''; });
+  zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('drag'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag'));
+  zone.addEventListener('drop', (e) => { e.preventDefault(); zone.classList.remove('drag'); addFiles([...e.dataTransfer.files].filter((f) => f.type.startsWith('image/')), post); });
+  document.getElementById('postForm').onsubmit = (e) => { e.preventDefault(); savePost(e.target); };
+}
+
+function paintPreviews(post) {
+  const E = S.editor;
+  const box = document.getElementById('previews');
+  if (!box) return;
+  box.innerHTML = [
+    ...E.keep.map((imgId) => `<div class="preview"><img src="/api/images/${imgId}" alt="">
+      <button type="button" data-act="removeImage" data-kind="keep" data-id="${imgId}" aria-label="Quitar foto">${icon('x')}</button></div>`),
+    ...E.added.map((a, i) => `<div class="preview${a.pending ? ' processing' : ''}">${a.preview ? `<img src="${a.preview}" alt="">` : ''}
+      ${a.pending ? '' : `<button type="button" data-act="removeImage" data-kind="added" data-i="${i}" aria-label="Quitar foto">${icon('x')}</button>`}</div>`),
+  ].join('');
+  S.editorPost = post;
+}
+
+async function addFiles(files, post) {
+  const E = S.editor;
+  const room = 10 - E.keep.length - E.added.length;
+  if (files.length > room) toast(room ? `Solo caben ${room} foto${room === 1 ? '' : 's'} más (máximo 10)` : 'Ya hay 10 fotos', true);
+  for (const file of files.slice(0, Math.max(0, room))) {
+    const slot = { pending: true };
+    E.added.push(slot); paintPreviews(post);
+    try { Object.assign(slot, await shrinkImage(file), { pending: false }); }
+    catch (err) { E.added.splice(E.added.indexOf(slot), 1); toast(err.message, true); }
+    paintPreviews(post);
+  }
+}
+actions.removeImage = (el) => {
+  const E = S.editor;
+  if (el.dataset.kind === 'keep') { E.keep = E.keep.filter((x) => x !== el.dataset.id); E.removed.push(el.dataset.id); }
+  else E.added.splice(Number(el.dataset.i), 1);
+  paintPreviews(S.editorPost);
+};
+
+function savePost(form) {
+  const E = S.editor;
+  const f = new FormData(form);
+  const title = String(f.get('title') || '').trim();
+  if (!title) { showFormError('Escribe un título.'); form.title.focus(); return; }
+  if (E.added.some((a) => a.pending)) { showFormError('Espera a que terminen de prepararse las fotos.'); return; }
+  const fields = { title, body: f.get('body'), category: f.get('category'), session_id: f.get('session_id') || null, pinned: f.get('pinned') === 'on' };
+  if (fields.category === 'fotos' && !E.keep.length && !E.added.length) { showFormError('Una publicación de fotos necesita al menos una foto.'); return; }
+  const imgs = E.added.map(({ data, width, height }) => ({ data, width, height }));
+  withBusy(form, async () => {
+    try {
+      if (E.id) {
+        await api(`/api/admin/posts/${E.id}`, { method: 'PATCH', body: { ...fields, add_images: imgs, remove_images: E.removed } });
+        toast('Publicación actualizada');
+      } else {
+        await api('/api/admin/posts', { method: 'POST', body: { ...fields, images: imgs } });
+        toast('Publicado en el foro');
+      }
+      E.added.forEach((a) => a.preview && URL.revokeObjectURL(a.preview));
+      S.forumFilter = ''; location.hash = '#/foro';
+    } catch (err) { showFormError(err.message); }
+  });
+}
+
 // ---------- Resultados ----------
 
 async function viewResultsList() {
@@ -1000,7 +1225,7 @@ actions.addEquipment = async () => {
 
 // --- Actividad ---
 const AUDIT_FILTERS = [['', 'Todo'], ['session', 'Convocatorias'], ['attendance', 'Asistencia'], ['results', 'Resultados'],
-  ['infraction', 'Incidencias'], ['equipment', 'Material'], ['player', 'Jugadores y roles']];
+  ['infraction', 'Incidencias'], ['equipment', 'Material'], ['player', 'Jugadores y roles'], ['post', 'Foro']];
 async function adminActividad(el) {
   const filter = S.auditFilter || '';
   const rows = await api(`/api/admin/audit?limit=300${filter ? `&entity=${encodeURIComponent(filter)}` : ''}`);
