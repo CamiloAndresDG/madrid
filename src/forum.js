@@ -1,4 +1,4 @@
-// Foro: noticias, anuncios y fotos post-entreno. Todos leen; solo Coordinación publica.
+// Foro: noticias, anuncios y fotos post-entreno. Lo leen los jugadores (o cualquiera, si Coordinación lo abre al público); solo Coordinación publica.
 const crypto = require('node:crypto');
 const { db } = require('./db');
 
@@ -63,6 +63,17 @@ async function insertImages(c, postId, images, startAt = 0) {
   }
 }
 
+// Ajuste de Coordinación: ¿el foro lo puede leer quien no tiene cuenta? Por defecto, no (solo jugadores)
+async function isPublic(runner = db) {
+  const row = await runner.get(`SELECT value FROM settings WHERE key = 'forum_public'`);
+  return row?.value === '1';
+}
+
+async function setPublic(runner, on) {
+  await runner.run(`INSERT INTO settings (key, value) VALUES ('forum_public', $1)
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [on ? '1' : '0']);
+}
+
 async function list({ category = null, limit = 30, before = null } = {}) {
   const params = [];
   const where = [];
@@ -84,4 +95,4 @@ async function list({ category = null, limit = 30, before = null } = {}) {
   return posts;
 }
 
-module.exports = { CATEGORIES, MAX_IMAGES, decodeImages, cleanPost, insertImages, list, fail };
+module.exports = { CATEGORIES, MAX_IMAGES, decodeImages, cleanPost, insertImages, list, isPublic, setPublic, fail };

@@ -208,11 +208,17 @@ CREATE TABLE IF NOT EXISTS post_images (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_post_images_post ON post_images(post_id, position);
+
+-- Ajustes del club decididos por Coordinación (clave/valor). forum_public: '1' = el foro lo ve cualquiera
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `;
 
 const TABLES = ['players', 'roles', 'player_roles', 'auth_sessions', 'sessions', 'responses', 'attendance', 'infractions',
   'teams', 'team_players', 'matches', 'player_stats', 'equipment', 'equipment_assignments', 'audit_log',
-  'posts', 'post_images'];
+  'posts', 'post_images', 'settings'];
 
 // Supabase expone las tablas de "public" por su API REST: activar RLS sin políticas
 // las cierra a esa API; el servidor entra como propietario de las tablas y no le afecta.

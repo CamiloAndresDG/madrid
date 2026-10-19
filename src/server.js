@@ -60,6 +60,13 @@ const requirePlayer = mw(async (req) => {
   req.roles = req.player.roles;
 });
 
+// Foro: con sesión, siempre; sin sesión, solo si Coordinación lo ha abierto al público
+const requireForumReader = mw(async (req) => {
+  req.player = await A.sessionPlayer(bearer(req));
+  if (req.player) { req.roles = req.player.roles; return; }
+  if (!(await F.isPublic())) throw new HttpError(401, 'Inicia sesión para continuar');
+});
+
 // Jugador con sesión y al menos uno de los roles indicados (el coordinador siempre entra)
 const requireRole = (...allowed) => mw(async (req) => {
   req.player = await A.sessionPlayer(bearer(req));
@@ -297,9 +304,12 @@ app.get('/api/dashboard', requirePlayer, wrap(async (req) => L.dashboard(req.pla
 
 // ---------- Foro ----------
 
-app.get('/api/posts', requirePlayer, wrap(async (req) => F.list({
+app.get('/api/posts', requireForumReader, wrap(async (req) => F.list({
   category: req.query.category || null, limit: req.query.limit, before: req.query.before || null,
 })));
+
+// ¿Lo puede leer quien no tiene cuenta? (la web lo consulta al cargar, para pintar el menú)
+app.get('/api/forum/access', wrap(async () => ({ public: await F.isPublic() })));
 
 // Fotos: el id es aleatorio y no adivinable, así que se pueden mostrar en <img> sin sesión.
 // No cambian nunca: caché larga.
@@ -827,6 +837,20 @@ admin.post('/equipment/:id/assign', wrap(async (req) => {
 }));
 
 // ---------- Foro (solo Coordinación publica) ----------
+
+// Solo coordinadores (requireRole() sin roles = solo coordinación): decide si el foro es público o solo para jugadores
+admin.put('/forum/access', requireRole(), wrap(async (req) => {
+  if (typeof req.body?.public !== 'boolean') throw new HttpError(400, 'Indica si el foro es público o solo para jugadores');
+  const on = req.body.public;
+  if (on === await F.isPublic()) return { ok: true, public: on };
+  await tx(async (c) => {
+    await F.setPublic(c, on);
+    await Audit.audit(c, req.player, { action: 'forum.access', entity: 'forum', summary: on
+      ? 'abrió el foro al público: lo puede leer cualquiera'
+      : 'dejó el foro solo para jugadores con sesión iniciada' });
+  });
+  return { ok: true, public: on };
+}));
 
 admin.post('/posts', requireRole(), wrap(async (req) => {
   const input = F.cleanPost(req.body || {});

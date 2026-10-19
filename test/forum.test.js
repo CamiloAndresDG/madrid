@@ -50,3 +50,12 @@ test('publicaciones con fotos: fijadas primero y borrado en cascada', async () =
   assert.strictEqual((await db.get('SELECT COUNT(*)::int AS n FROM post_images')).n, 0);
   assert.ok(old);
 });
+
+test('el foro es solo para jugadores hasta que Coordinación lo abre al público', async () => {
+  assert.strictEqual(await F.isPublic(), false);
+  await F.setPublic(db, true);
+  assert.strictEqual(await F.isPublic(), true);
+  await F.setPublic(db, false);
+  assert.strictEqual(await F.isPublic(), false);
+  assert.strictEqual((await db.get(`SELECT COUNT(*)::int AS n FROM settings WHERE key = 'forum_public'`)).n, 1);
+});

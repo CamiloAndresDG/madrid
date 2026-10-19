@@ -5,6 +5,7 @@
 const S = {
   token: localStorage.getItem('f7_token') || '',   // sesión de la cuenta (ver /api/auth/*)
   me: null,                                        // datos de /api/me (jugador, roles)
+  forumPublic: false,                              // ¿el foro lo puede leer quien no tiene cuenta? (/api/forum/access)
   adminSessionId: Number(sessionStorage.getItem('f7_admin_session')) || null,
   res: null,       // editor de resultados
   att: null,       // editor de asistencia
@@ -162,7 +163,10 @@ function renderNav() {
   }
   items.push(['/normas', 'Normas', 'book']);
   if (S.token && canManage()) items.push(['/admin', 'Coordinación', 'shield']);
-  if (!S.token) items.unshift(['/', 'Inicio', 'calendar']);
+  if (!S.token) {
+    items.unshift(['/', 'Inicio', 'calendar']);
+    if (S.forumPublic) items.splice(1, 0, ['/foro', 'Foro', 'megaphone']);
+  }
   $nav.innerHTML = items.map(([href, label, ic]) => {
     // Resultados incluye la clasificación, así que también se ilumina en esas páginas
     const active = href === '/' ? (h === '/')
@@ -247,7 +251,9 @@ async function render() {
         if (!S.keepScroll) window.scrollTo({ top: 0 });
       }
       S.keepScroll = false;
-      renderAccount();
+      // La vista puede haber cargado los datos de la persona (p. ej. justo tras entrar): se repinta la barra
+      // para que aparezcan las secciones que dependen del rol, como Coordinación
+      renderNav();
       return;
     }
   }
@@ -319,6 +325,42 @@ document.addEventListener('input', (e) => {
 
 // ---------- Jugador: convocatoria ----------
 
+// Quién es el equipo y por qué existe: lo ve quien llega sin cuenta
+function teamInfoHtml() {
+  return `<section class="card about" aria-labelledby="aboutTitle">
+    <h2 id="aboutTitle">Quiénes somos</h2>
+    <p>Somos la sección de <strong>Fútbol 7 de GMadrid Sports</strong>, el club deportivo multideportivo <strong>LGTBIQ+ de Madrid</strong> fundado en 2007.</p>
+    <h3>Por qué existimos</h3>
+    <p>Para dar visibilidad a las personas LGTBIQ+ en el deporte y erradicar la LGTBIfobia en él. Somos un club inclusivo: el fútbol es para quien quiera jugar.</p>
+    <h3>Qué hacemos</h3>
+    <ul class="about-list">
+      <li>${icon('calendar')}<span>Entrenamientos regulares, normalmente los miércoles.</span></li>
+      <li>${icon('trophy')}<span>Participamos en competiciones, torneos y ligas amistosas o federadas.</span></li>
+    </ul>
+    <h3>Contacto</h3>
+    <p class="about-links">
+      <a class="btn btn-sm" href="https://www.instagram.com/gmadridsports_futbol7/" target="_blank" rel="noopener">Instagram · @gmadridsports_futbol7</a>
+      <a class="btn btn-sm" href="https://www.gmadridsports.org/" target="_blank" rel="noopener">gmadridsports.org</a>
+    </p>
+  </section>`;
+}
+
+// Foro en el inicio para quien no tiene cuenta: las últimas publicaciones si es público; si no, cómo entrar
+async function homeForumHtml() {
+  if (!S.forumPublic) {
+    return `<p class="muted">El foro es para los jugadores de la sección. Entra con tu cuenta para leer las noticias y las fotos.</p>
+      <a class="btn" href="/entrar">Entrar</a>`;
+  }
+  try {
+    const posts = await api('/api/posts?limit=3');
+    S.posts = new Map(posts.map((pst) => [pst.id, pst]));
+    if (!posts.length) return '<p class="muted">Todavía no hay publicaciones. Aquí aparecerán las noticias y las fotos de los entrenos.</p>';
+    return `${posts.map(postHtml).join('')}<p><a class="btn" href="/foro">Ver todo el foro</a></p>`;
+  } catch (e) {
+    return '<p class="muted">No se ha podido cargar el foro ahora mismo.</p>';
+  }
+}
+
 async function viewHome() {
   if (!S.token) {
     $app.innerHTML = `<div class="page-head"><h1>Fútbol 7 · Gmadrid</h1></div>
@@ -327,7 +369,12 @@ async function viewHome() {
         <p class="muted">Con tu cuenta confirmas si vienes, ves quién va y en qué equipo juegas.</p>
         <div class="row" style="margin-top:1rem">
           <a class="btn btn-primary" href="/registro">Crear cuenta</a>
-          <a class="btn" href="/entrar">Ya tengo cuenta</a></div></div>`;
+          <a class="btn" href="/entrar">Ya tengo cuenta</a></div></div>
+      ${teamInfoHtml()}
+      <section class="home-section" aria-labelledby="homeForumTitle">
+        <h2 id="homeForumTitle">Foro</h2>
+        ${await homeForumHtml()}
+      </section>`;
     return;
   }
   let me;
@@ -761,14 +808,27 @@ const POST_FILTERS = [['', 'Todo'], ['noticia', 'Noticias'], ['anuncio', 'Anunci
 const isCoordinator = () => !!(S.me && S.me.player && S.me.player.roles.includes('coordinador'));
 const fmtWhen = (iso) => new Intl.DateTimeFormat('es-ES', { timeZone: TZ, day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }).format(new Date(iso));
 
+// Coordinación decide quién puede leer el foro: solo jugadores (por defecto) o cualquiera
+function forumAccessHtml() {
+  const pub = S.forumPublic;
+  return `<section class="card forum-access" aria-labelledby="forumAccessTitle">
+    <h2 id="forumAccessTitle">¿Quién puede leer el foro?</h2>
+    <p class="small muted">${pub ? 'Cualquiera puede leerlo, tenga cuenta o no. Solo Coordinación puede publicar.' : 'Solo lo ven los jugadores con sesión iniciada.'}</p>
+    <div class="row" role="group" aria-label="Visibilidad del foro">
+      <button class="btn btn-sm${pub ? '' : ' btn-primary'}" type="button" data-act="forumAccess" data-public="0" aria-pressed="${!pub}">Solo jugadores</button>
+      <button class="btn btn-sm${pub ? ' btn-primary' : ''}" type="button" data-act="forumAccess" data-public="1" aria-pressed="${pub}">Público</button>
+    </div></section>`;
+}
+
 async function viewForum() {
-  if (!S.token) return viewHome();
-  if (!S.me) S.me = await api('/api/me');
+  if (!S.token && !S.forumPublic) return viewHome();
+  if (S.token && !S.me) S.me = await api('/api/me');
   const filter = S.forumFilter || '';
   const posts = await api(`/api/posts?limit=40${filter ? `&category=${filter}` : ''}`);
   S.posts = new Map(posts.map((pst) => [pst.id, pst]));
   $app.innerHTML = `<div class="page-head"><h1>Foro</h1>
       ${isCoordinator() ? `<a class="btn btn-primary" href="/foro/nueva">${icon('plus')} Nueva publicación</a>` : ''}</div>
+    ${isCoordinator() ? forumAccessHtml() : ''}
     <nav class="seg-tabs forum-filters" aria-label="Filtrar publicaciones">${POST_FILTERS.map(([k, l]) =>
       `<a href="/foro" data-act="forumFilter" data-cat="${k}"${k === filter ? ' aria-current="page"' : ''}>${l}</a>`).join('')}</nav>
     ${posts.length ? posts.map(postHtml).join('') : `<div class="card empty"><h2>${filter ? 'Nada por aquí todavía' : 'El foro está esperando su primera publicación'}</h2>
@@ -804,6 +864,14 @@ function postHtml(pst) {
 }
 
 actions.forumFilter = (el) => { S.forumFilter = el.dataset.cat; S.keepScroll = true; viewForum(); };
+actions.forumAccess = async (el) => {
+  const pub = el.dataset.public === '1';
+  if (pub === S.forumPublic) return;
+  await api('/api/admin/forum/access', { method: 'PUT', body: { public: pub } });
+  S.forumPublic = pub;
+  toast(pub ? 'El foro es público: lo puede leer cualquiera' : 'El foro es solo para jugadores');
+  S.keepScroll = true; renderNav(); await viewForum();
+};
 actions.expandPost = (el) => {
   document.getElementById(`body${el.dataset.id}`)?.classList.remove('clamped');
   el.remove();
@@ -1848,7 +1916,15 @@ paintThemeToggle();
 
 // ---------- Inicio ----------
 loadRules().catch(() => {});
+// Si Coordinación ha abierto el foro al público, el menú lo muestra también a quien no tiene cuenta
+async function loadForumAccess() {
+  try { S.forumPublic = !!(await api('/api/forum/access')).public; } catch (e) { S.forumPublic = false; }
+}
 (async () => {
-  if (S.token) { try { S.me = await api('/api/me'); } catch (e) { /* sesión caducada: api() la cierra */ } }
+  const [, me] = await Promise.all([
+    loadForumAccess(),
+    S.token ? api('/api/me').catch(() => null) : null, // sesión caducada: api() la cierra
+  ]);
+  if (me) S.me = me;
   render();
 })();
