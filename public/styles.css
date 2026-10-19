@@ -666,3 +666,6 @@ dialog.lightbox { width: min(1100px, calc(100% - 16px)); max-height: calc(100% -
 
 /* El círculo de iniciales respeta hidden (sin sesión no se ve) */
 .account-initials[hidden] { display: none; }
+
+/* Vista atenuada mientras llegan los datos (no se sustituye el contenido) */
+#app.is-loading { opacity: .5; transition: opacity .2s ease; pointer-events: none; }

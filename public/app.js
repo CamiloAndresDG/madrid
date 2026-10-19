@@ -187,7 +187,6 @@ document.addEventListener('keydown', (e) => {
 });
 window.addEventListener('hashchange', () => setAccountMenu(false));
 
-const SKELETON = `<div class="skeleton" aria-hidden="true"><i style="width:40%;height:1.6rem"></i><i class="big"></i><i class="mid"></i><i class="mid"></i></div>`;
 let lastRoute = null;
 let renderSeq = 0;
 
@@ -199,7 +198,8 @@ async function render() {
   lastRoute = route;
   const seq = ++renderSeq;
   // Si la sección tarda, se muestran siluetas en lugar de dejar la anterior congelada
-  const skel = changedRoute ? setTimeout(() => { if (seq === renderSeq) { $app.innerHTML = SKELETON; $app.setAttribute('aria-busy', 'true'); } }, 180) : null;
+  // Mientras carga, la vista anterior se atenúa; nunca se sustituye (eso desmontaba la carga en curso)
+  const dim = changedRoute ? setTimeout(() => { if (seq === renderSeq) $app.classList.add('is-loading'); }, 180) : null;
   for (const [re, fn] of routes) {
     const m = h.match(re);
     if (m) {
@@ -209,8 +209,8 @@ async function render() {
         $app.innerHTML = `<div class="card empty load-error" role="alert">${icon('alert')}<h2>No se ha podido cargar</h2>
           <p class="muted">${esc(e.message)}</p><button class="btn-primary" data-act="retry">Reintentar</button></div>`;
       } finally {
-        clearTimeout(skel);
-        $app.removeAttribute('aria-busy');
+        clearTimeout(dim);
+        $app.classList.remove('is-loading');
       }
       if (changedRoute && seq === renderSeq) {
         $app.classList.remove('view-enter'); void $app.offsetWidth; $app.classList.add('view-enter');
@@ -1140,7 +1140,6 @@ const toLocalInput = (iso) => {
 async function adminConvocatoria(el) {
   if (!S.adminSessionId) return noSession(el);
   const d = await api(`/api/admin/sessions/${S.adminSessionId}`);
-  if (!el.isConnected) return; // el usuario ya ha cambiado de pestaña
   S.detail = d;
   const s = d.session;
   const players = (await api('/api/admin/players')).filter((p) => p.active);
