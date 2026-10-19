@@ -71,8 +71,11 @@ CREATE TABLE IF NOT EXISTS sessions (
   capacity INTEGER NOT NULL DEFAULT 16,
   cancelled INTEGER NOT NULL DEFAULT 0,
   finalized_at TEXT,                         -- lista final generada (lunes)
-  petos_player_id INTEGER REFERENCES players(id) ON DELETE SET NULL,
-  balones_player_id INTEGER REFERENCES players(id) ON DELETE SET NULL,
+  published_at TEXT,                         -- NULL = borrador (no la ven los jugadores)
+  opens_at TEXT,                             -- NULL = domingo 17:00 antes del entreno
+  arrival_time TEXT NOT NULL DEFAULT '21:45' CHECK (arrival_time ~ '^\\d{2}:\\d{2}$'),
+  created_by INTEGER REFERENCES players(id) ON DELETE SET NULL,
+  updated_at TEXT,
   notes TEXT,
   results_notes TEXT
 );
@@ -106,7 +109,10 @@ CREATE TABLE IF NOT EXISTS infractions (
   status TEXT NOT NULL DEFAULT 'confirmed' CHECK (status IN ('pending','confirmed','justified')),
   source TEXT NOT NULL DEFAULT 'manual',     -- manual | auto | attendance
   note TEXT,
-  created_at TEXT NOT NULL DEFAULT ${NOW}
+  created_at TEXT NOT NULL DEFAULT ${NOW},
+  created_by INTEGER REFERENCES players(id) ON DELETE SET NULL,
+  updated_by INTEGER REFERENCES players(id) ON DELETE SET NULL,
+  updated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS teams (
@@ -140,9 +146,44 @@ CREATE TABLE IF NOT EXISTS player_stats (
   mvp INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (session_id, player_id)
 );
+
+-- Material del equipo y quién se lo lleva (la última asignación es la vigente; holder NULL = en el club)
+CREATE TABLE IF NOT EXISTS equipment (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE CHECK (length(trim(name)) > 0),
+  active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+  created_at TEXT NOT NULL DEFAULT ${NOW}
+);
+INSERT INTO equipment (name) VALUES ('Petos amarillos'), ('Petos naranjas'), ('Balones') ON CONFLICT (name) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS equipment_assignments (
+  id SERIAL PRIMARY KEY,
+  equipment_id INTEGER NOT NULL REFERENCES equipment(id) ON DELETE CASCADE,
+  holder_id INTEGER REFERENCES players(id) ON DELETE SET NULL,
+  session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+  assigned_by INTEGER REFERENCES players(id) ON DELETE SET NULL,
+  assigned_at TEXT NOT NULL,
+  note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_equipment_assignments_item ON equipment_assignments(equipment_id, assigned_at DESC);
+
+-- Registro de actividad de coordinación (trazabilidad)
+CREATE TABLE IF NOT EXISTS audit_log (
+  id SERIAL PRIMARY KEY,
+  at TEXT NOT NULL,
+  actor_id INTEGER REFERENCES players(id) ON DELETE SET NULL,
+  actor_name TEXT NOT NULL,
+  action TEXT NOT NULL,
+  entity TEXT NOT NULL,
+  entity_id INTEGER,
+  session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+  summary TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at DESC);
 `;
 
-const TABLES = ['players', 'roles', 'player_roles', 'auth_sessions', 'sessions', 'responses', 'attendance', 'infractions', 'teams', 'team_players', 'matches', 'player_stats'];
+const TABLES = ['players', 'roles', 'player_roles', 'auth_sessions', 'sessions', 'responses', 'attendance', 'infractions',
+  'teams', 'team_players', 'matches', 'player_stats', 'equipment', 'equipment_assignments', 'audit_log'];
 
 // Supabase expone las tablas de "public" por su API REST: activar RLS sin políticas
 // las cierra a esa API; el servidor entra como propietario de las tablas y no le afecta.

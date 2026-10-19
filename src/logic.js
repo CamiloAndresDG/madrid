@@ -69,7 +69,8 @@ function nextWednesday(now = new Date()) {
 
 function sessionTimes(session) {
   return {
-    opensAt: madridToDate(addDays(session.date, -3), '17:00'),          // domingo 17h
+    // Apertura: la que fije coordinación al publicar o, si no, el domingo a las 17h
+    opensAt: session.opens_at ? new Date(session.opens_at) : madridToDate(addDays(session.date, -3), '17:00'),
     listDay: addDays(session.date, -2),                                   // lunes: lista final
     tuesdayDeadline: madridToDate(addDays(session.date, -1), '15:00'),
     wednesdayDeadline: madridToDate(session.date, '15:00'),

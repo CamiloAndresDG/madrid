@@ -161,7 +161,7 @@ async function viewHome() {
   }
 
   if (!s) {
-    html += `<div class="card empty"><h2>No hay entrenamientos convocados</h2><p>La convocatoria se abre los domingos a las 17:00.</p></div>`;
+    html += `<div class="card empty"><h2>No hay convocatoria publicada</h2><p>Te aparecerá aquí en cuanto Coordinación la publique.</p></div>`;
   } else {
     const sess = s.session;
     const total = s.titulares.length + s.reservas.length;
@@ -186,25 +186,34 @@ async function viewHome() {
       <div class="row spread">
         <div>
           <div class="hero-date">${esc(fmtDate(sess.date))} · ${esc(sess.start_time)}</div>
-          <div class="muted">📍 ${esc(sess.location)} · llega a las 21:45</div>
+          <div class="muted">📍 ${esc(sess.location)} · llega a las ${esc(sess.arrival_time || '21:45')}</div>
+          ${sess.notes ? `<div class="small" style="margin-top:.35rem;white-space:pre-wrap">📝 ${esc(sess.notes)}</div>` : ''}
         </div>
         <div class="row">
           ${sess.finalized_at ? '<span class="chip ok">Lista final</span>' : '<span class="chip">Lista provisional</span>'}
           <span class="chip">${s.titulares.length}/${sess.capacity} plazas</span>
         </div>
       </div>
-      ${!sess.is_open && !sess.has_started && !sess.cancelled ? `<p class="small muted" style="margin-top:.5rem">La convocatoria se abre el ${esc(fmtDateTime(sess.opens_at))}.</p>` : ''}
+      ${!sess.is_open && !sess.has_started && !sess.cancelled ? `<p class="small muted" style="margin-top:.5rem">Las inscripciones se abren el ${esc(fmtDateTime(sess.opens_at))}.</p>` : ''}
       ${box}
       <div class="row">
         <button class="btn btn-yes btn-big" data-act="answerYes" data-id="${sess.id}" ${canYes ? '' : 'disabled'}>Voy</button>
         <button class="btn btn-no btn-big" data-act="answerNo" data-id="${sess.id}" ${canNo ? '' : 'disabled'}>No voy</button>
       </div>
       <p class="small muted" style="margin:.75rem 0 0">Puedes borrarte sin penalización hasta el ${esc(fmtDateTime(sess.tuesday_deadline))}.
-      La lista final se genera el lunes. ${sess.petos ? `🦺 Petos: ${esc(sess.petos)}.` : ''} ${sess.balones ? `⚽ Balones: ${esc(sess.balones)}.` : ''}</p>
+      La lista se va completando en directo por prioridad y hora de inscripción.</p>
     </div>`;
 
-    html += `<div class="card"><div class="row spread"><h2 style="margin:0">Lista (${total})</h2>${PRIO_LEGEND}</div>
+    const myKit = (s.equipment || []).filter((e) => e.holder_id === me.player.id);
+    if (myKit.length) {
+      html += `<div class="status-box warn"><strong>🎒 Te toca llevar: ${myKit.map((e) => esc(e.name)).join(', ')}</strong>
+        Tráelo al próximo entreno.</div>`;
+    }
+
+    html += `<div class="card"><div class="row spread"><h2 style="margin:0">Quién va (${total})</h2>${PRIO_LEGEND}</div>
       ${renderList(s, me.player.id)}</div>`;
+    html += teamsProposalHtml(s.teams_proposal, me.player.id);
+    html += equipmentHtml(s.equipment, me.player.id);
   }
 
   if (me.infractions.length) {
@@ -213,6 +222,39 @@ async function viewHome() {
       ${infStatusChip(i.status)}</li>`).join('')}</ul></div>`;
   }
   $app.innerHTML = html;
+}
+
+// Equipos provisionales: se recalculan con cada inscripción según las estadísticas
+function teamsProposalHtml(tp, meId = null) {
+  if (!tp) {
+    return `<div class="card"><h2>Equipos</h2><p class="muted small">Se harán solos cuando haya al menos 4 personas apuntadas
+      (2 equipos hasta 17; triangular de 3 equipos desde 18).</p></div>`;
+  }
+  return `<div class="card"><h2>Equipos provisionales</h2>
+    <p class="small muted">${esc(tp.description)}. Se reequilibran con cada inscripción según las estadísticas de la temporada.</p>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">${tp.teams.map((t) => `
+      <div class="team-card"><strong><span class="team-dot" style="background:${esc(t.color)}"></span> ${esc(t.name)}</strong>
+        <span class="small muted">· ${t.players.length} jugadores</span>
+        <ul class="list small">${t.players.map((p) => `<li style="padding:.2rem 0${p.player_id === meId ? ';font-weight:700' : ''}">${esc(p.name)}${p.player_id === meId ? ' (tú)' : ''}</li>`).join('')}</ul></div>`).join('')}</div>
+    ${tp.schedule.length ? `<h3 style="margin-top:1rem">Orden de partidos</h3><ol class="list small">${tp.schedule.map((m) => `
+      <li><span class="pos">${esc(m.start)}</span><span class="name">${esc(m.home)} – ${esc(m.away)}</span><span class="muted">${m.minutes} min</span></li>`).join('')}</ol>
+      <p class="small muted">El equipo que descansa entra en el siguiente partido.</p>` : ''}</div>`;
+}
+
+// Material: quién se lo lleva ahora
+function equipmentHtml(items, meId = null) {
+  if (!items || !items.length) return '';
+  return `<div class="card"><h2>Material</h2><ul class="list">${items.map((e) => `<li>
+    <span class="name">🎒 ${esc(e.name)}<small>${e.assigned_at ? `desde ${esc(fmtDateTime(e.assigned_at))}` : 'sin asignar'}</small></span>
+    <span class="${e.holder_id === meId ? 'chip warn' : 'chip'}">${e.holder_name ? esc(e.holder_name) + (e.holder_id === meId ? ' (tú)' : '') : 'En el club'}</span></li>`).join('')}</ul></div>`;
+}
+
+// Registro de actividad: «Camilo asignó a Andrés los Petos amarillos · mié 21 oct, 23:05»
+function activityList(rows) {
+  if (!rows.length) return '<p class="muted small">Sin actividad registrada.</p>';
+  return `<ul class="list">${rows.map((a) => `<li style="align-items:flex-start">
+    <span class="name"><strong>${esc(a.actor_name)}</strong> ${esc(a.summary)}
+      <small>${esc(fmtDateTime(a.at))}${a.session_date ? ` · entreno del ${esc(fmtShort(a.session_date))}` : ''}</small></span></li>`).join('')}</ul>`;
 }
 
 function renderList(s, meId, { admin = false } = {}) {
@@ -583,8 +625,8 @@ async function viewRules() {
 // ---------- Coordinación ----------
 
 const ADMIN_TABS = [
-  ['convocatoria', 'Convocatoria'], ['asistencia', 'Asistencia'], ['resultados', 'Resultados'],
-  ['incidencias', 'Incidencias'], ['jugadores', 'Jugadores'], ['clasificacion', 'Clasificación'],
+  ['convocatoria', 'Convocatoria'], ['asistencia', 'Asistencia'], ['resultados', 'Resultados'], ['material', 'Material'],
+  ['incidencias', 'Incidencias'], ['jugadores', 'Jugadores'], ['actividad', 'Actividad'], ['clasificacion', 'Clasificación'],
 ];
 
 async function viewAdmin(tab = 'convocatoria') {
@@ -607,7 +649,10 @@ async function viewAdmin(tab = 'convocatoria') {
     S.adminSessionId = ov.current_id || ov.sessions[0]?.id || null;
   }
   const head = adminTabsHtml(tab, ov) + sessionPicker(ov, tab);
-  const fn = { convocatoria: adminConvocatoria, asistencia: adminAsistencia, resultados: adminResultados, incidencias: adminIncidencias, jugadores: adminJugadores }[tab];
+  const fn = {
+    convocatoria: adminConvocatoria, asistencia: adminAsistencia, resultados: adminResultados, material: adminMaterial,
+    incidencias: adminIncidencias, jugadores: adminJugadores, actividad: adminActividad,
+  }[tab];
   if (!fn) { location.hash = '#/admin'; return; }
   $app.innerHTML = head + '<div id="adminBody"><p class="muted">Cargando…</p></div>';
   await fn(document.getElementById('adminBody'));
@@ -619,10 +664,10 @@ function adminTabsHtml(tab, ov) {
 }
 
 function sessionPicker(ov, tab) {
-  if (['incidencias', 'jugadores'].includes(tab)) return '';
+  if (['incidencias', 'jugadores', 'actividad'].includes(tab)) return '';
   return `<div class="row" style="margin-bottom:1rem">
     <select data-change="pickSession" aria-label="Entrenamiento">${ov.sessions.map((s) => `<option value="${s.id}" ${s.id === S.adminSessionId ? 'selected' : ''}>
-      ${esc(fmtShort(s.date))}${s.cancelled ? ' (cancelado)' : ''}${s.id === ov.current_id ? ' · próximo' : ''}</option>`).join('')}</select>
+      ${esc(fmtShort(s.date))}${s.cancelled ? ' (cancelado)' : !s.is_published ? ' (borrador)' : ''}${s.id === ov.current_id ? ' · próximo' : ''}</option>`).join('')}</select>
     <button class="btn-primary btn-sm" data-act="newSession">+ Nuevo entrenamiento</button></div>`;
 }
 
@@ -631,24 +676,39 @@ actions.pickSession = (el) => {
   S.res = null; S.att = null; render();
 };
 actions.newSession = () => {
-  $dialog.innerHTML = `<form method="dialog" class="stack"><h2>Nuevo entrenamiento</h2>
-    <label class="field">Fecha<input type="date" id="nsDate" value="${S.overview.next_wednesday}" required></label>
-    <div class="row">
-      <label class="field">Hora<input type="time" id="nsTime" value="22:00"></label>
-      <label class="field">Plazas<select id="nsCap"><option>16</option><option>14</option><option>18</option><option>21</option></select></label>
+  $dialog.innerHTML = `<form method="dialog" class="stack"><h2>Nueva convocatoria</h2>
+    <div class="grid grid-2" style="gap:.75rem">
+      <label class="field">Fecha<input type="date" id="nsDate" value="${S.overview.next_wednesday}" required></label>
+      <label class="field">Plazas<input type="number" id="nsCap" min="2" max="40" value="16"></label>
+      <label class="field">Hora de inicio<input type="time" id="nsTime" value="22:00"></label>
+      <label class="field">Hora de llegada<input type="time" id="nsArrive" value="21:45"></label>
     </div>
     <label class="field">Lugar<input id="nsLoc" value="Polideportivo Marqués de Samaranch"></label>
+    <label class="field">Notas para el equipo (opcional)<textarea id="nsNotes" placeholder="Ej.: traed camiseta clara y oscura"></textarea></label>
+    <fieldset class="stack" style="border:1px solid var(--border);border-radius:12px;padding:.75rem">
+      <legend class="small muted">Publicación</legend>
+      <label><input type="radio" name="nsPub" value="open" checked> Publicar y abrir inscripciones ya</label>
+      <label><input type="radio" name="nsPub" value="sunday"> Publicar, inscripciones desde el domingo a las 17:00</label>
+      <label><input type="radio" name="nsPub" value="draft"> Guardar como borrador (no la ven los jugadores)</label>
+    </fieldset>
+    <p class="small muted">16 plazas = un partido de 2 equipos; 21 = triangular de 3 equipos con partidos de 8 minutos.</p>
     <div class="row" style="justify-content:flex-end"><button value="cancel" class="btn-ghost">Cancelar</button><button value="ok" class="btn-primary">Crear</button></div></form>`;
   $dialog.showModal();
   $dialog.onclose = async () => {
     if ($dialog.returnValue !== 'ok') return;
+    const pub = document.querySelector('input[name="nsPub"]:checked').value;
     try {
       const r = await api('/api/admin/sessions', { method: 'POST', body: {
-        date: document.getElementById('nsDate').value, start_time: document.getElementById('nsTime').value,
-        capacity: Number(document.getElementById('nsCap').value), location: document.getElementById('nsLoc').value,
+        date: document.getElementById('nsDate').value,
+        capacity: Number(document.getElementById('nsCap').value),
+        start_time: document.getElementById('nsTime').value,
+        arrival_time: document.getElementById('nsArrive').value,
+        location: document.getElementById('nsLoc').value,
+        notes: document.getElementById('nsNotes').value,
+        publish: pub !== 'draft', open_now: pub === 'open',
       } });
       S.adminSessionId = r.id; sessionStorage.setItem('f7_admin_session', r.id);
-      toast('Entrenamiento creado'); location.hash = '#/admin/convocatoria'; render();
+      toast(pub === 'draft' ? 'Borrador guardado' : 'Convocatoria publicada'); location.hash = '#/admin/convocatoria'; render();
     } catch (e) { toast(e.message, true); }
   };
 };
@@ -658,6 +718,14 @@ function noSession(el) {
 }
 
 // --- Convocatoria ---
+// Fecha/hora ISO -> valor de <input type="datetime-local"> en la hora del navegador
+const toLocalInput = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
 async function adminConvocatoria(el) {
   if (!S.adminSessionId) return noSession(el);
   const d = await api(`/api/admin/sessions/${S.adminSessionId}`);
@@ -665,27 +733,51 @@ async function adminConvocatoria(el) {
   const s = d.session;
   const players = (await api('/api/admin/players')).filter((p) => p.active);
   S.players = players;
-  const opts = (sel) => `<option value="">—</option>${players.map((p) => `<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}`;
   const inList = new Set([...d.titulares, ...d.reservas].map((e) => e.player_id));
+  const yes = d.titulares.length + d.reservas.length;
+  const pubChip = s.cancelled ? '<span class="chip danger">Cancelado</span>'
+    : !s.is_published ? '<span class="chip warn">Borrador · no la ven los jugadores</span>'
+      : s.is_open ? '<span class="chip ok">Publicada · inscripciones abiertas</span>'
+        : s.has_started ? '<span class="chip">Publicada · cerrada</span>'
+          : `<span class="chip">Publicada · abre ${esc(fmtDateTime(s.opens_at))}</span>`;
+  const pubButtons = s.cancelled || s.has_started ? '' : !s.is_published
+    ? `<button class="btn-primary" data-act="publishSession" data-open="1">🚀 Publicar y abrir inscripciones ya</button>
+       <button data-act="publishSession" data-open="0">Publicar (abre ${esc(fmtDateTime(s.opens_at))})</button>`
+    : `${!s.is_open ? '<button class="btn-primary" data-act="publishSession" data-open="1">Abrir inscripciones ya</button>' : ''}
+       ${yes ? '' : '<button class="btn-ghost" data-act="unpublishSession">Pasar a borrador</button>'}`;
   el.innerHTML = `
-  <div class="card">
+  <div class="card featured">
     <div class="row spread">
       <div><div class="hero-date">${esc(fmtDate(s.date))} · ${esc(s.start_time)}</div>
-        <div class="small muted">Abre ${esc(fmtDateTime(s.opens_at))} · lista final el ${esc(fmtShort(s.list_day))} · sin penalización hasta ${esc(fmtDateTime(s.tuesday_deadline))}</div></div>
-      <div class="row">${s.cancelled ? '<span class="chip danger">Cancelado</span>' : s.finalized_at ? `<span class="chip ok">Lista final · ${esc(fmtDateTime(s.finalized_at))}</span>` : '<span class="chip">Provisional</span>'}</div>
+        <div class="small muted">Sin penalización hasta ${esc(fmtDateTime(s.tuesday_deadline))}${d.created_by_name ? ` · creada por ${esc(d.created_by_name)}` : ''}</div></div>
+      <div class="row">${pubChip}${s.finalized_at ? `<span class="chip ok">Lista final · ${esc(fmtDateTime(s.finalized_at))}</span>` : ''}</div>
     </div>
-    <div class="row" style="margin-top:.75rem">
-      <label class="field">Plazas<input type="number" min="2" max="40" value="${s.capacity}" data-change="patchSession" data-field="capacity"></label>
-      <label class="field">🦺 Petos<select data-change="patchSession" data-field="petos_player_id">${opts(s.petos_player_id)}</select></label>
-      <label class="field">⚽ Balones<select data-change="patchSession" data-field="balones_player_id">${opts(s.balones_player_id)}</select></label>
-    </div>
-    <div class="row" style="margin-top:1rem">
-      <button class="btn-primary" data-act="finalize">${s.finalized_at ? '↻ Regenerar lista final' : '📋 Generar lista final (lunes)'}</button>
-      ${s.finalized_at ? '<button data-act="unfinalize">Volver a provisional</button>' : ''}
-      <button class="btn-ghost" data-act="toggleCancel">${s.cancelled ? 'Reactivar' : 'Cancelar entrenamiento'}</button>
-      <button class="btn-ghost" data-act="deleteSession">Eliminar</button>
-    </div>
+    ${pubButtons ? `<div class="row" style="margin-top:1rem">${pubButtons}</div>` : ''}
   </div>
+
+  <div class="card"><h2>Detalles</h2>
+    <form id="sessionForm" class="stack">
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.75rem">
+        <label class="field">Fecha<input type="date" name="date" value="${esc(s.date)}" required></label>
+        <label class="field">Hora de inicio<input type="time" name="start_time" value="${esc(s.start_time)}" required></label>
+        <label class="field">Hora de llegada<input type="time" name="arrival_time" value="${esc(s.arrival_time || '21:45')}" required></label>
+        <label class="field">Plazas<input type="number" name="capacity" min="2" max="40" value="${s.capacity}" required></label>
+        <label class="field">Inscripciones desde<input type="datetime-local" name="opens_at" value="${esc(toLocalInput(s.opens_at))}"></label>
+      </div>
+      <label class="field">Lugar<input name="location" value="${esc(s.location)}" required></label>
+      <label class="field">Notas para el equipo<textarea name="notes" placeholder="Opcional: lo verán los jugadores">${esc(s.notes || '')}</textarea></label>
+      <div class="row"><button class="btn-primary" type="submit">Guardar cambios</button>
+        <span class="small muted">Cada cambio queda registrado en «Actividad».</span></div>
+    </form>
+  </div>
+
+  <div class="row" style="margin-bottom:1rem">
+    <button data-act="finalize">${s.finalized_at ? '↻ Regenerar lista final' : '📋 Congelar lista final'}</button>
+    ${s.finalized_at ? '<button data-act="unfinalize">Volver a provisional</button>' : ''}
+    <button class="btn-ghost" data-act="toggleCancel">${s.cancelled ? 'Reactivar' : 'Cancelar entrenamiento'}</button>
+    <button class="btn-ghost" data-act="deleteSession">Eliminar</button>
+  </div>
+
   <div class="grid grid-2">
     <div class="card"><div class="row spread"><h2 style="margin:0">Lista (${d.titulares.length}/${s.capacity}${d.reservas.length ? ` + ${d.reservas.length} reservas` : ''})</h2></div>
       ${d.previous ? `<p class="small muted">Prioridades según el entreno del ${esc(fmtShort(d.previous.date))}.</p>` : ''}
@@ -695,21 +787,38 @@ async function adminConvocatoria(el) {
         <button class="btn-sm" data-act="adminAdd">Añadir</button>
       </div></div>
     <div class="stack">
+      ${teamsProposalHtml(d.teams_proposal)}
       <div class="card"><div class="row spread"><h2 style="margin:0">Mensaje para WhatsApp</h2><button class="btn-sm" data-act="copyWa">Copiar</button></div>
         <pre class="wa">${esc(d.whatsapp)}</pre></div>
       <div class="card"><h2>Sin responder (${d.sin_responder.length})</h2><p class="small">${d.sin_responder.map((p) => esc(p.name)).join(', ') || '—'}</p>
         ${d.no_van.length ? `<h3>No van</h3><ul class="list">${d.no_van.map((n) => `<li><span class="name">${esc(n.name)}<small>${esc(n.cancel_reason || '')} ${esc(fmtTime(n.updated_at))}</small></span></li>`).join('')}</ul>` : ''}
       </div>
       ${d.infractions.length ? `<div class="card"><h2>Incidencias de este entreno</h2><ul class="list">${d.infractions.map((i) => `<li><span class="name">${esc(i.name)}<small>${esc(S.rules?.infraction_types[i.type]?.label || i.type)}</small></span>${infStatusChip(i.status)}</li>`).join('')}</ul><a href="#/admin/incidencias" class="small">Revisar incidencias →</a></div>` : ''}
+      <div class="card"><h2>Actividad de esta convocatoria</h2>${activityList(d.activity)}</div>
     </div>
   </div>`;
+
+  document.getElementById('sessionForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const body = Object.fromEntries(f.entries());
+    body.capacity = Number(body.capacity);
+    body.opens_at = body.opens_at ? new Date(body.opens_at).toISOString() : null;
+    try {
+      await api(`/api/admin/sessions/${S.adminSessionId}`, { method: 'PATCH', body });
+      toast('Cambios guardados'); render();
+    } catch (err) { toast(err.message, true); }
+  };
 }
-actions.copyWa = () => copyText(S.detail.whatsapp);
-actions.patchSession = async (el) => {
-  const v = el.type === 'number' ? Number(el.value) : (el.value === '' ? null : Number(el.value));
-  await api(`/api/admin/sessions/${S.adminSessionId}`, { method: 'PATCH', body: { [el.dataset.field]: v } });
-  toast('Guardado'); render();
+actions.publishSession = async (el) => {
+  await api(`/api/admin/sessions/${S.adminSessionId}/publish`, { method: 'POST', body: { open_now: el.dataset.open === '1' } });
+  toast(el.dataset.open === '1' ? 'Publicada: ya pueden apuntarse' : 'Publicada'); render();
 };
+actions.unpublishSession = async () => {
+  await api(`/api/admin/sessions/${S.adminSessionId}/unpublish`, { method: 'POST' });
+  toast('Ahora es un borrador'); render();
+};
+actions.copyWa = () => copyText(S.detail.whatsapp);
 actions.finalize = async () => {
   const r = await api(`/api/admin/sessions/${S.adminSessionId}/finalize`, { method: 'POST' });
   await copyText(r.whatsapp).catch(() => {});
@@ -736,6 +845,63 @@ actions.adminAdd = async () => {
   await api(`/api/admin/sessions/${S.adminSessionId}/responses/${pid}`, { method: 'PUT', body: { answer: 'yes' } });
   render();
 };
+
+// --- Material ---
+async function adminMaterial(el) {
+  const [data, players] = await Promise.all([api('/api/admin/equipment'), api('/api/admin/players')]);
+  const active = players.filter((p) => p.active);
+  const sess = S.overview.sessions.find((x) => x.id === S.adminSessionId);
+  const opts = (sel) => `<option value="">En el club (nadie se lo lleva)</option>${active.map((p) => `<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}`;
+  el.innerHTML = `
+  <div class="card"><h2>¿Quién se lleva el material?</h2>
+    <p class="small muted">Al terminar el entreno, elige quién se lleva cada cosa. Queda registrado quién lo asignó y cuándo
+      ${sess ? `(se asociará al entreno del ${esc(fmtShort(sess.date))}, el elegido arriba)` : ''}.</p>
+    <ul class="list">${data.items.filter((i) => i.active).map((i) => `<li style="flex-wrap:wrap">
+      <span class="name"><strong>🎒 ${esc(i.name)}</strong>
+        <small>${i.holder_name ? `Lo tiene <b>${esc(i.holder_name)}</b>` : 'En el club'}${i.assigned_at ? ` · ${esc(i.assigned_by_name || '—')} lo asignó el ${esc(fmtDateTime(i.assigned_at))}` : ''}</small></span>
+      <span class="row">
+        <select id="eqHolder${i.id}" aria-label="Quién se lleva ${esc(i.name)}">${opts(i.holder_id)}</select>
+        <button class="btn-primary btn-sm" data-act="assignEquipment" data-id="${i.id}">Asignar</button>
+        <button class="btn-ghost btn-sm" data-act="toggleEquipment" data-id="${i.id}" data-active="0" title="Ya no se usa">Retirar</button>
+      </span></li>`).join('') || '<li class="muted">No hay material activo.</li>'}</ul>
+    <div class="row" style="margin-top:1rem">
+      <input id="eqNew" placeholder="Nuevo material (p. ej. Conos)" style="flex:1">
+      <button class="btn-sm" data-act="addEquipment">Añadir material</button>
+    </div>
+    ${data.items.some((i) => !i.active) ? `<p class="small muted" style="margin-top:.75rem">Retirado: ${data.items.filter((i) => !i.active).map((i) => `${esc(i.name)} <a href="#" data-act="toggleEquipment" data-id="${i.id}" data-active="1">reactivar</a>`).join(' · ')}</p>` : ''}
+  </div>
+  <div class="card"><h2>Historial del material</h2>${data.history.length ? `<ul class="list">${data.history.map((h) => `<li>
+    <span class="name"><strong>${esc(h.assigned_by_name || '—')}</strong> ${h.holder_name ? `asignó a <strong>${esc(h.holder_name)}</strong>` : 'dejó en el club'} los «${esc(h.equipment_name)}»
+      <small>${esc(fmtDateTime(h.assigned_at))}${h.session_date ? ` · tras el entreno del ${esc(fmtShort(h.session_date))}` : ''}${h.note ? ` · ${esc(h.note)}` : ''}</small></span></li>`).join('')}</ul>` : '<p class="muted small">Aún no se ha asignado nada.</p>'}</div>`;
+}
+actions.assignEquipment = async (el) => {
+  const holder = document.getElementById(`eqHolder${el.dataset.id}`).value;
+  await api(`/api/admin/equipment/${el.dataset.id}/assign`, { method: 'POST', body: { holder_id: holder ? Number(holder) : null, session_id: S.adminSessionId } });
+  toast('Material asignado'); render();
+};
+actions.toggleEquipment = async (el) => {
+  await api(`/api/admin/equipment/${el.dataset.id}`, { method: 'PATCH', body: { active: el.dataset.active === '1' } });
+  render();
+};
+actions.addEquipment = async () => {
+  const name = document.getElementById('eqNew').value.trim();
+  if (!name) return;
+  await api('/api/admin/equipment', { method: 'POST', body: { name } });
+  toast('Material añadido'); render();
+};
+
+// --- Actividad ---
+const AUDIT_FILTERS = [['', 'Todo'], ['session', 'Convocatorias'], ['attendance', 'Asistencia'], ['results', 'Resultados'],
+  ['infraction', 'Incidencias'], ['equipment', 'Material'], ['player', 'Jugadores y roles']];
+async function adminActividad(el) {
+  const filter = S.auditFilter || '';
+  const rows = await api(`/api/admin/audit?limit=300${filter ? `&entity=${encodeURIComponent(filter)}` : ''}`);
+  el.innerHTML = `<div class="card"><div class="row spread"><h2 style="margin:0">Actividad de coordinación</h2>
+    <select data-change="auditFilter" aria-label="Filtrar">${AUDIT_FILTERS.map(([k, l]) => `<option value="${k}" ${k === filter ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+    <p class="small muted">Cada cambio que hace coordinación queda aquí con su autor, la fecha y la hora.</p>
+    ${activityList(rows)}</div>`;
+}
+actions.auditFilter = (el) => { S.auditFilter = el.value; render(); };
 
 // --- Asistencia ---
 async function adminAsistencia(el) {
@@ -825,7 +991,9 @@ function renderResEditor(el = document.getElementById('adminBody')) {
   const teamOpts = (sel) => R.teams.map((t, i) => `<option value="${i}" ${i === sel ? 'selected' : ''}>${esc(t.name)}</option>`).join('');
   const st = (pid) => R.stats[pid] || { goals: 0, assists: 0, saves: 0, mvp: false };
   el.innerHTML = `
-  <div class="card"><div class="row spread"><h2 style="margin:0">Equipos</h2><button class="btn-sm" data-act="resAddTeam">+ Equipo</button></div>
+  <div class="card"><div class="row spread"><h2 style="margin:0">Equipos</h2>
+    <span class="row">${S.detail?.teams_proposal ? '<button class="btn-sm" data-act="useProposedTeams">Usar equipos propuestos</button>' : ''}
+    <button class="btn-sm" data-act="resAddTeam">+ Equipo</button></span></div>
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin-top:.75rem">${R.teams.map((t, i) => `
       <div class="team-card row"><input type="color" value="${esc(t.color)}" data-input="resTeam" data-i="${i}" data-f="color" style="width:44px;padding:2px">
         <input value="${esc(t.name)}" data-input="resTeam" data-i="${i}" data-f="name" style="flex:1;min-width:0">
@@ -863,6 +1031,23 @@ function renderResEditor(el = document.getElementById('adminBody')) {
   if (!S.players) api('/api/admin/players').then((ps) => { S.players = ps.filter((p) => p.active); renderResEditor(); });
 }
 actions.resTeam = (el) => { S.res.teams[el.dataset.i][el.dataset.f] = el.value; };
+// Carga los equipos equilibrados (y el orden del triangular) en el editor de resultados
+actions.useProposedTeams = () => {
+  const tp = S.detail.teams_proposal;
+  const R = S.res;
+  R.teams = tp.teams.map((t) => ({ name: t.name, color: t.color }));
+  R.assign = {};
+  tp.teams.forEach((t, i) => t.players.forEach((pl) => {
+    R.assign[pl.player_id] = i;
+    if (!R.players.some((x) => x.id === pl.player_id)) R.players.push({ id: pl.player_id, name: pl.name });
+  }));
+  R.players.sort((a, b) => a.name.localeCompare(b.name));
+  const idx = new Map(tp.teams.map((t, i) => [t.name, i]));
+  R.matches = tp.schedule.length
+    ? tp.schedule.map((m) => ({ home: idx.get(m.home), away: idx.get(m.away), home_goals: 0, away_goals: 0 }))
+    : [{ home: 0, away: 1, home_goals: 0, away_goals: 0 }];
+  toast('Equipos propuestos cargados: apunta los marcadores'); renderResEditor();
+};
 actions.resAddTeam = () => { const n = S.res.teams.length; S.res.teams.push({ name: `Equipo ${n + 1}`, color: TEAM_COLORS[n % TEAM_COLORS.length] }); renderResEditor(); };
 actions.resDelTeam = (el) => {
   const i = Number(el.dataset.i);
@@ -916,16 +1101,21 @@ async function adminIncidencias(el) {
   const pending = list.filter((i) => i.status === 'pending');
   const rest = list.filter((i) => i.status !== 'pending');
   const expelled = players.filter((p) => p.expelled);
+  const typeOpts = (sel) => Object.entries(rules.infraction_types).map(([k, t]) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${esc(t.label)}</option>`).join('');
   const row = (i) => `<li style="flex-wrap:wrap">
     <span class="name"><strong>${esc(i.name)}</strong> · ${esc(fmtShort(i.date))}
-      <small>${esc(i.label)} · ${i.weeks === 2 ? '2 semanas' : '1 semana'} en P3${i.serious ? ' · <b>grave</b>' : ''} · ${i.source === 'auto' ? 'automática al borrarse' : i.source === 'attendance' ? 'desde asistencia' : 'manual'}</small>
+      <small>${i.weeks === 2 ? '2 semanas' : '1 semana'} en P3${i.serious ? ' · <b>grave</b>' : ''} · ${i.source === 'auto' ? 'automática al borrarse' : i.source === 'attendance' ? 'desde asistencia' : 'manual'}
+        ${i.created_by_name ? ` · registrada por ${esc(i.created_by_name)}` : ''}${i.updated_by_name ? ` · último cambio: ${esc(i.updated_by_name)}, ${esc(fmtDateTime(i.updated_at))}` : ''}</small>
+      <select data-change="infType" data-id="${i.id}" aria-label="Tipo de incidencia" style="margin-top:.35rem;max-width:100%">${typeOpts(i.type)}</select>
       ${i.note ? `<small>📝 ${esc(i.note)}</small>` : ''}</span>
     ${infStatusChip(i.status)}
     <span class="row">
       ${i.status !== 'confirmed' ? `<button class="btn-sm" data-act="infStatus" data-id="${i.id}" data-status="confirmed">Confirmar</button>` : ''}
       ${i.status !== 'justified' ? `<button class="btn-sm" data-act="infStatus" data-id="${i.id}" data-status="justified">Justificada</button>` : ''}
+      <button class="btn-sm btn-ghost" data-act="infNote" data-id="${i.id}" title="Editar nota">📝</button>
       <button class="btn-sm btn-ghost" data-act="infDelete" data-id="${i.id}" title="Eliminar">🗑</button>
     </span></li>`;
+  S.infractionsById = new Map(list.map((x) => [x.id, x]));
   el.innerHTML = `
   ${expelled.length ? `<div class="status-box danger"><strong>Fuera del equipo por 2 faltas graves</strong>${expelled.map((p) => esc(p.name)).join(', ')}.
     No pueden apuntarse mientras tengan 2 faltas graves confirmadas.</div>` : ''}
@@ -944,6 +1134,17 @@ async function adminIncidencias(el) {
 actions.infStatus = async (el) => {
   await api(`/api/admin/infractions/${el.dataset.id}`, { method: 'PATCH', body: { status: el.dataset.status } });
   toast('Actualizada'); render();
+};
+actions.infType = async (el) => {
+  await api(`/api/admin/infractions/${el.dataset.id}`, { method: 'PATCH', body: { type: el.value } });
+  toast('Tipo cambiado'); render();
+};
+actions.infNote = async (el) => {
+  const inf = S.infractionsById.get(Number(el.dataset.id));
+  const note = prompt(`Nota de la incidencia de ${inf.name}:`, inf.note || '');
+  if (note === null) return;
+  await api(`/api/admin/infractions/${el.dataset.id}`, { method: 'PATCH', body: { note } });
+  toast('Nota guardada'); render();
 };
 actions.infDelete = async (el) => {
   if (!confirm('¿Eliminar esta incidencia?')) return;

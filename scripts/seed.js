@@ -31,7 +31,7 @@ async function seed({ demo = false } = {}) {
   const last = L.addDays(next, -7);
   await tx(async (c) => {
     for (const date of [last, next]) {
-      await c.run('INSERT INTO sessions (date) VALUES ($1) ON CONFLICT (date) DO NOTHING', [date]);
+      await c.run(`INSERT INTO sessions (date, published_at) VALUES ($1, $2) ON CONFLICT (date) DO NOTHING`, [date, new Date().toISOString()]);
     }
     const lastS = await c.get('SELECT * FROM sessions WHERE date = $1', [last]);
     if (await c.get('SELECT 1 FROM responses WHERE session_id = $1', [lastS.id])) return;

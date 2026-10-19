@@ -130,3 +130,12 @@ test('panel personal: historial, puntos acumulados y racha', async () => {
   assert.strictEqual(d.me.streak, 2);
   assert.strictEqual(d.group.sessions[1].goals, 4);
 });
+
+test('el registro de actividad guarda textos con símbolos (UTF-8)', async () => {
+  const Audit = require('../src/audit');
+  await Audit.audit(null, { id: A, name: 'Ana' }, { action: 'session.update', entity: 'session', entityId: s3, sessionId: s3,
+    summary: 'cambió la convocatoria del 21/10: hora 22:00 → 21:30; lugar «Pista 1» → «Pista 2»' });
+  const [last] = await Audit.list({ sessionId: s3, limit: 1 });
+  assert.strictEqual(last.actor_name, 'Ana');
+  assert.match(last.summary, /22:00 → 21:30/);
+});

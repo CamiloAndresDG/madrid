@@ -7,6 +7,8 @@ async function startLocalPg({ dir = path.join(__dirname, '..', 'data', 'pg'), po
   const fresh = !fs.existsSync(path.join(dir, 'PG_VERSION'));
   const pg = new EmbeddedPostgres({
     databaseDir: dir, user: 'postgres', password: 'postgres', port, persistent, onLog: () => {},
+    // UTF-8 como en Supabase (en Windows initdb usaría WIN1252 y fallarían caracteres como «→»)
+    initdbFlags: ['--encoding=UTF8', '--locale=C'],
   });
   if (fresh) await pg.initialise();
   await pg.start();

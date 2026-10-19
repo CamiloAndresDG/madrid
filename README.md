@@ -24,6 +24,14 @@ Las contraseñas se guardan con scrypt y las sesiones duran 30 días (solo se gu
 - Pueden consultar la clasificación, los resultados y las normas.
 
 **Coordinación** (`/#/admin`, cuentas con rol de coordinador o gestor):
+- **Publicar convocatorias**: se crean como borrador o publicadas; «Publicar y abrir inscripciones ya» hace que
+  aparezcan al momento a los jugadores. Se editan fecha, hora de inicio y de llegada, lugar, plazas, apertura y notas.
+- **Equipos automáticos**: con cada inscripción se reequilibran según las estadísticas (puntos por partido, goles y
+  asistencias). Hasta 17 titulares, partido de 2 equipos; desde 18, triangular de 3 equipos con partidos de 8 minutos.
+  En «Resultados» se cargan con «Usar equipos propuestos».
+- **Material**: quién se lleva cada cosa (petos amarillos, naranjas, balones… y lo que se añada), con historial.
+- **Actividad**: cada cambio de coordinación queda registrado con autor, fecha y hora
+  (p. ej. «Camilo asignó a Andrés los Petos amarillos tras el entreno del 21/10 · mié 21 oct, 23:05»).
 - **Convocatoria**: crear entrenamientos, plazas (14/16…), encargados de petos y balones, añadir o quitar gente,
   **generar la lista final** (congela el orden) y copiar el mensaje para WhatsApp.
 - **Asistencia**: pasar lista (Asistió / Llegó tarde / No se presentó / Falta justificada / Fuera por lista llena).
