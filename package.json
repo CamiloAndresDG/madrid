@@ -1,0 +1,19 @@
+{
+  "name": "gmadrid-futbol7-convocatorias",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Convocatorias, prioridades, incidencias y resultados de los entrenamientos de Fútbol 7 Gmadrid",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/server.js",
+    "dev": "node --disable-warning=ExperimentalWarning --watch src/server.js",
+    "seed": "node --disable-warning=ExperimentalWarning scripts/seed.js",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js"
+  },
+  "dependencies": {
+    "express": "4.21.2"
+  }
+}
