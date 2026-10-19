@@ -54,15 +54,45 @@ function fmtTime(iso) {
   return new Intl.DateTimeFormat('es-ES', { timeZone: TZ, weekday: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(iso));
 }
 
+// Iconos SVG del sprite de index.html (un único trazo)
+const icon = (name, label = '') => `<svg class="icon"${label ? ` role="img" aria-label="${esc(label)}"` : ' aria-hidden="true"'}><use href="#i-${name}"/></svg>`;
+// Números con formato español (13,7) y plurales
+const nf = (v, digits = 0) => Number(v || 0).toLocaleString('es-ES', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+const plural = (n, one, many) => `${nf(n)} ${n === 1 ? one : many}`;
+
+// Diálogo de confirmación propio (sustituye a confirm()): resuelve true/false
+function confirmDialog({ title, body = '', confirm = 'Confirmar', danger = false }) {
+  return new Promise((resolve) => {
+    $dialog.innerHTML = `<form method="dialog">
+      <h2>${esc(title)}</h2>${body ? `<p class="muted">${body}</p>` : ''}
+      <div class="dialog-actions"><button value="cancel" class="btn-ghost">Volver</button>
+      <button value="ok" class="${danger ? 'btn-danger-solid' : 'btn-primary'}">${esc(confirm)}</button></div></form>`;
+    $dialog.onclose = () => resolve($dialog.returnValue === 'ok');
+    $dialog.showModal();
+  });
+}
+// Diálogo con un campo de texto (sustituye a prompt()): resuelve el texto o null
+function textDialog({ title, label, value = '', confirm = 'Guardar' }) {
+  return new Promise((resolve) => {
+    $dialog.innerHTML = `<form method="dialog" class="stack">
+      <h2>${esc(title)}</h2>
+      <label class="field">${esc(label)}<textarea id="dlgText">${esc(value)}</textarea></label>
+      <div class="dialog-actions"><button value="cancel" class="btn-ghost">Volver</button>
+      <button value="ok" class="btn-primary">${esc(confirm)}</button></div></form>`;
+    $dialog.onclose = () => resolve($dialog.returnValue === 'ok' ? document.getElementById('dlgText').value : null);
+    $dialog.showModal();
+  });
+}
+
 const prioBadge = (p) => `<span class="prio prio-${p}" title="Prioridad ${p}">P${p}</span>`;
-const PRIO_LEGEND = `<div class="prio-legend">
+const PRIO_LEGEND = `<div class="prio-legend" aria-label="Prioridades">
   <span>${prioBadge(1)} No vino la semana pasada</span>
   <span>${prioBadge(2)} Sí vino</span>
   <span>${prioBadge(3)} Sanción</span></div>`;
 
 async function copyText(text) {
-  try { await navigator.clipboard.writeText(text); toast('Copiado'); }
-  catch { prompt('Copia el texto:', text); }
+  try { await navigator.clipboard.writeText(text); toast('Copiado al portapapeles'); }
+  catch { await textDialog({ title: 'Copia el texto', label: 'Selecciónalo y cópialo', value: text, confirm: 'Hecho' }); }
 }
 
 async function loadRules() {
@@ -87,15 +117,17 @@ const routes = [
 function renderNav() {
   const h = location.hash || '#/';
   const items = [];
-  if (S.token) items.push(['#/', 'Convocatoria'], ['#/clasificacion', 'Clasificación'], ['#/resultados', 'Resultados']);
-  items.push(['#/normas', 'Normas']);
-  if (S.token && canManage()) items.push(['#/admin', 'Coordinación']);
-  if (!S.token) items.push(['#/entrar', 'Entrar'], ['#/registro', 'Crear cuenta']);
-  if (S.token) items.push(['#/salir', 'Salir']);
-  $nav.innerHTML = items.map(([href, label]) => {
+  if (S.token) {
+    items.push(['#/', 'Convocatoria', 'calendar'], ['#/clasificacion', 'Clasificación', 'chart'], ['#/resultados', 'Resultados', 'trophy']);
+  }
+  items.push(['#/normas', 'Normas', 'book']);
+  if (S.token && canManage()) items.push(['#/admin', 'Coordinación', 'shield']);
+  if (!S.token) items.push(['#/entrar', 'Entrar', 'user'], ['#/registro', 'Crear cuenta', 'plus']);
+  $nav.innerHTML = items.map(([href, label, ic]) => {
     const active = href === '#/' ? (h === '#/' || h === '#') : h.startsWith(href);
-    return `<a href="${href}" class="${active ? 'active' : ''}">${label}</a>`;
+    return `<a href="${href}"${active ? ' aria-current="page"' : ''}>${icon(ic)}<span>${label}</span></a>`;
   }).join('');
+  document.getElementById('logoutLink').hidden = !S.token;
 }
 
 async function render() {
@@ -136,122 +168,108 @@ document.addEventListener('input', (e) => {
 
 async function viewHome() {
   if (!S.token) {
-    $app.innerHTML = `<div class="card empty">
-      <h1>⚽ Convocatorias Fútbol 7</h1>
-      <p>Apúntate a los entrenamientos desde tu cuenta. Si ya tienes una, entra con tu email y contraseña.</p>
-      <div class="row" style="justify-content:center;margin-top:1rem">
-        <a class="btn btn-primary" href="#/registro">Crear cuenta</a>
-        <a class="btn" href="#/entrar">Entrar</a></div></div>`;
+    $app.innerHTML = `<div class="page-head"><h1>Fútbol 7 · Gmadrid</h1></div>
+      <div class="card empty">
+        <h2>Apúntate a los entrenamientos de los miércoles</h2>
+        <p class="muted">Con tu cuenta confirmas si vienes, ves quién va y en qué equipo juegas.</p>
+        <div class="row" style="margin-top:1rem">
+          <a class="btn btn-primary" href="#/registro">Crear cuenta</a>
+          <a class="btn" href="#/entrar">Ya tengo cuenta</a></div></div>`;
     return;
   }
   let me;
   try { me = await api('/api/me'); }
   catch (e) {
-    $app.innerHTML = `<div class="card empty"><h2>Tu sesión ha caducado</h2><p>Vuelve a entrar para seguir.</p>
+    $app.innerHTML = `<div class="card empty"><h2>Tu sesión ha caducado</h2><p class="muted">Vuelve a entrar para seguir.</p>
       <a class="btn btn-primary" href="#/entrar">Entrar</a></div>`;
     return;
   }
   S.me = me;
   const s = me.session;
-  let html = `<div class="row spread" style="margin-bottom:.75rem"><h1 style="margin:0">Hola, ${esc(me.player.name.split(' ')[0])} 👋</h1></div>`;
+  let html = '';
 
   if (me.expelled) {
-    html += `<div class="status-box danger"><strong>Tienes dos faltas graves esta temporada</strong>
-      Según las normas de la sección quedas fuera del equipo. Habla con Coordinación.</div>`;
+    html += `<div class="status-box danger">${icon('alert')}<div><strong>Tienes dos faltas graves esta temporada</strong>
+      Según las normas de la sección quedas fuera del equipo. Habla con Coordinación.</div></div>`;
   }
 
   if (!s) {
-    html += `<div class="card empty"><h2>No hay convocatoria publicada</h2><p>Te aparecerá aquí en cuanto Coordinación la publique.</p></div>`;
+    html += `<div class="page-head"><h1>Convocatoria</h1></div>
+      <div class="card empty"><h2>Todavía no hay convocatoria</h2>
+      <p class="muted">Aparecerá aquí en cuanto Coordinación la publique. Normalmente, el domingo por la tarde.</p></div>`;
+    $app.innerHTML = html;
+    return;
+  }
+
+  const sess = s.session;
+  const total = s.titulares.length + s.reservas.length;
+  const mine = s.my_entry;
+  const ahead = mine && mine.role === 'reserva' ? mine.position - sess.capacity - 1 : 0;
+  let status;
+  if (sess.cancelled) {
+    status = { cls: 'is-cancel', ic: 'x', title: 'Entrenamiento cancelado', text: 'Este miércoles no hay entreno.' };
+  } else if (mine && mine.role === 'titular') {
+    status = { cls: 'is-in', ic: 'check', title: `Estás dentro · puesto ${mine.position} de ${sess.capacity}`, text: `${mine.reason}.` };
+  } else if (mine) {
+    status = { cls: 'is-wait', ic: 'wait', title: ahead > 0 ? `Reserva · ${plural(ahead, 'persona', 'personas')} por delante` : 'Reserva · eres la siguiente persona en entrar',
+      text: 'Si alguien se borra, entras automáticamente.' };
+  } else if (s.my_response === 'no') {
+    status = { cls: 'is-out', ic: 'x', title: 'Has dicho que no vienes', text: 'Si cambias de idea, apúntate: entrarás según tu prioridad y la hora.' };
+  } else if (!sess.is_open && !sess.has_started) {
+    status = { cls: '', ic: 'lock', title: 'Inscripciones cerradas por ahora', text: `Se abren el ${fmtDateTime(sess.opens_at)}.` };
   } else {
-    const sess = s.session;
-    const total = s.titulares.length + s.reservas.length;
-    const mine = s.my_entry;
-    let box;
-    if (sess.cancelled) box = `<div class="status-box danger"><strong>Entrenamiento cancelado</strong></div>`;
-    else if (mine && mine.role === 'titular') {
-      box = `<div class="status-box ok"><strong>✅ Vas · titular (puesto ${mine.position})</strong>
-        ${prioBadge(mine.priority)} <span class="small">${esc(mine.reason)}</span></div>`;
-    } else if (mine) {
-      box = `<div class="status-box warn"><strong>⏳ Estás en reservas (puesto ${mine.position})</strong>
-        Si alguien se borra subes automáticamente. ${prioBadge(mine.priority)} <span class="small">${esc(mine.reason)}</span></div>`;
-    } else if (s.my_response === 'no') {
-      box = `<div class="status-box"><strong>Has dicho que no vas</strong>Si cambias de idea, apúntate (entrarás según tu prioridad y la hora).</div>`;
-    } else {
-      box = `<div class="status-box"><strong>Aún no has respondido</strong>${sess.is_open ? 'Apúntate solo si estás seguro/a de poder ir.' : ''}</div>`;
-    }
-
-    const canYes = sess.is_open && !mine && !me.expelled;
-    const canNo = !sess.has_started && !sess.cancelled && s.my_response !== 'no';
-    html += `<div class="card featured">
-      <div class="row spread">
-        <div>
-          <div class="hero-date">${esc(fmtDate(sess.date))} · ${esc(sess.start_time)}</div>
-          <div class="muted">📍 ${esc(sess.location)} · llega a las ${esc(sess.arrival_time || '21:45')}</div>
-          ${sess.notes ? `<div class="small" style="margin-top:.35rem;white-space:pre-wrap">📝 ${esc(sess.notes)}</div>` : ''}
-        </div>
-        <div class="row">
-          ${sess.finalized_at ? '<span class="chip ok">Lista final</span>' : '<span class="chip">Lista provisional</span>'}
-          <span class="chip">${s.titulares.length}/${sess.capacity} plazas</span>
-        </div>
-      </div>
-      ${!sess.is_open && !sess.has_started && !sess.cancelled ? `<p class="small muted" style="margin-top:.5rem">Las inscripciones se abren el ${esc(fmtDateTime(sess.opens_at))}.</p>` : ''}
-      ${box}
-      <div class="row">
-        <button class="btn btn-yes btn-big" data-act="answerYes" data-id="${sess.id}" ${canYes ? '' : 'disabled'}>Voy</button>
-        <button class="btn btn-no btn-big" data-act="answerNo" data-id="${sess.id}" ${canNo ? '' : 'disabled'}>No voy</button>
-      </div>
-      <p class="small muted" style="margin:.75rem 0 0">Puedes borrarte sin penalización hasta el ${esc(fmtDateTime(sess.tuesday_deadline))}.
-      La lista se va completando en directo por prioridad y hora de inscripción.</p>
-    </div>`;
-
-    const myKit = (s.equipment || []).filter((e) => e.holder_id === me.player.id);
-    if (myKit.length) {
-      html += `<div class="status-box warn"><strong>🎒 Te toca llevar: ${myKit.map((e) => esc(e.name)).join(', ')}</strong>
-        Tráelo al próximo entreno.</div>`;
-    }
-
-    html += `<div class="card"><div class="row spread"><h2 style="margin:0">Quién va (${total})</h2>${PRIO_LEGEND}</div>
-      ${renderList(s, me.player.id)}</div>`;
-    html += teamsProposalHtml(s.teams_proposal, me.player.id);
-    html += equipmentHtml(s.equipment, me.player.id);
+    status = { cls: '', ic: 'calendar', title: '¿Vienes este miércoles?', text: `Quedan ${plural(Math.max(0, sess.capacity - s.titulares.length), 'plaza', 'plazas')} de ${sess.capacity}.` };
   }
 
-  if (me.infractions.length) {
-    html += `<div class="card"><h2>Mis incidencias</h2><ul class="list">${me.infractions.map((i) => `
-      <li><div class="name">${esc(i.label)}<small>${esc(fmtShort(i.date))} · ${i.weeks === 2 ? '2 semanas en P3' : '1 semana en P3'}</small></div>
-      ${infStatusChip(i.status)}</li>`).join('')}</ul></div>`;
-  }
+  const canYes = sess.is_open && !mine && !me.expelled;
+  const canNo = !sess.has_started && !sess.cancelled && s.my_response !== 'no';
+  const myKit = (s.equipment || []).filter((e) => e.holder_id === me.player.id);
+  const actionsHtml = canYes
+    ? `<button class="btn btn-primary btn-big" data-act="answerYes" data-id="${sess.id}">Voy</button>
+       ${canNo ? `<button class="btn btn-quiet btn-big" data-act="answerNo" data-id="${sess.id}">No puedo ir</button>` : ''}`
+    : (canNo ? `<button class="btn btn-quiet" data-act="answerNo" data-id="${sess.id}">${mine ? 'Borrarme' : 'No puedo ir'}</button>` : '');
+
+  html += `<section class="hero" aria-labelledby="heroDate">
+    <h1 class="hero-date" id="heroDate">${esc(fmtDate(sess.date))}</h1>
+    <div class="hero-meta">
+      <span>${icon('clock')} ${esc(sess.start_time)} · llegada ${esc(sess.arrival_time || '21:45')}</span>
+      <span>${icon('pin')} ${esc(sess.location)}</span>
+    </div>
+    ${sess.notes ? `<p class="hero-notes">${esc(sess.notes)}</p>` : ''}
+    <div class="hero-status ${status.cls}" aria-live="polite">${icon(status.ic)}
+      <div><strong>${esc(status.title)}</strong><p>${esc(status.text)}</p></div></div>
+    ${actionsHtml ? `<div class="hero-actions">${actionsHtml}</div>` : ''}
+    ${myKit.length ? `<div class="kit-line">${icon('bib')} Te toca llevar ${myKit.map((e) => esc(e.name.toLowerCase())).join(' y ')}.</div>` : ''}
+    ${canNo && mine ? `<p class="hero-foot">Puedes borrarte sin penalización hasta el ${esc(fmtDateTime(sess.tuesday_deadline))}.</p>` : ''}
+  </section>`;
+
+  html += `<div class="card"><div class="row spread" style="margin-bottom:.5rem"><h2 style="margin:0">Quién va · ${total}</h2>
+      <span class="chip">${sess.finalized_at ? 'Lista cerrada' : 'En directo'}</span></div>
+    ${PRIO_LEGEND}
+    ${renderList(s, me.player.id)}</div>`;
+  if (s.teams_proposal) html += teamsProposalHtml(s.teams_proposal, me.player.id);
   $app.innerHTML = html;
 }
 
 // Equipos provisionales: se recalculan con cada inscripción según las estadísticas
 function teamsProposalHtml(tp, meId = null) {
   if (!tp) {
-    return `<div class="card"><h2>Equipos</h2><p class="muted small">Se harán solos cuando haya al menos 4 personas apuntadas
-      (2 equipos hasta 17; triangular de 3 equipos desde 18).</p></div>`;
+    return `<div class="card"><h2>Equipos</h2><p class="muted small">Se forman solos en cuanto haya 4 personas apuntadas:
+      dos equipos hasta 17 y triangular de tres desde 18.</p></div>`;
   }
-  return `<div class="card"><h2>Equipos provisionales</h2>
+  return `<div class="card"><h2>Equipos</h2>
     <p class="small muted">${esc(tp.description)}. Se reequilibran con cada inscripción según las estadísticas de la temporada.</p>
-    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">${tp.teams.map((t) => `
-      <div class="team-card"><strong><span class="team-dot" style="background:${esc(t.color)}"></span> ${esc(t.name)}</strong>
-        <span class="small muted">· ${t.players.length} jugadores</span>
-        <ul class="list small">${t.players.map((p) => `<li style="padding:.2rem 0${p.player_id === meId ? ';font-weight:700' : ''}">${esc(p.name)}${p.player_id === meId ? ' (tú)' : ''}</li>`).join('')}</ul></div>`).join('')}</div>
-    ${tp.schedule.length ? `<h3 style="margin-top:1rem">Orden de partidos</h3><ol class="list small">${tp.schedule.map((m) => `
-      <li><span class="pos">${esc(m.start)}</span><span class="name">${esc(m.home)} – ${esc(m.away)}</span><span class="muted">${m.minutes} min</span></li>`).join('')}</ol>
-      <p class="small muted">El equipo que descansa entra en el siguiente partido.</p>` : ''}</div>`;
-}
-
-// Material: quién se lo lleva ahora
-function equipmentHtml(items, meId = null) {
-  if (!items || !items.length) return '';
-  return `<div class="card"><h2>Material</h2><ul class="list">${items.map((e) => `<li>
-    <span class="name">🎒 ${esc(e.name)}<small>${e.assigned_at ? `desde ${esc(fmtDateTime(e.assigned_at))}` : 'sin asignar'}</small></span>
-    <span class="${e.holder_id === meId ? 'chip warn' : 'chip'}">${e.holder_name ? esc(e.holder_name) + (e.holder_id === meId ? ' (tú)' : '') : 'En el club'}</span></li>`).join('')}</ul></div>`;
+    <div class="teams">${tp.teams.map((t) => `
+      <div class="team"><h3><span class="team-dot" style="background:${esc(t.color)}"></span>${esc(t.name)} <span class="muted small">${t.players.length}</span></h3>
+        <ul>${t.players.map((pl) => `<li${pl.player_id === meId ? ' class="me"' : ''}>${esc(pl.name)}${pl.player_id === meId ? ' (tú)' : ''}</li>`).join('')}</ul></div>`).join('')}</div>
+    ${tp.schedule.length ? `<h3 style="margin-top:1.25rem">Orden de partidos</h3><ol class="schedule">${tp.schedule.map((m) => `
+      <li><span class="muted">${esc(m.start)}</span><span>${esc(m.home)} – ${esc(m.away)}</span><span class="muted">${m.minutes} min</span></li>`).join('')}</ol>
+      <p class="small muted" style="margin-top:.5rem">El equipo que descansa entra en el siguiente partido.</p>` : ''}</div>`;
 }
 
 // Registro de actividad: «Camilo asignó a Andrés los Petos amarillos · mié 21 oct, 23:05»
 function activityList(rows) {
-  if (!rows.length) return '<p class="muted small">Sin actividad registrada.</p>';
+  if (!rows.length) return '<p class="muted small">Aún no hay cambios registrados.</p>';
   return `<ul class="list">${rows.map((a) => `<li style="align-items:flex-start">
     <span class="name"><strong>${esc(a.actor_name)}</strong> ${esc(a.summary)}
       <small>${esc(fmtDateTime(a.at))}${a.session_date ? ` · entreno del ${esc(fmtShort(a.session_date))}` : ''}</small></span></li>`).join('')}</ul>`;
@@ -260,15 +278,15 @@ function activityList(rows) {
 function renderList(s, meId, { admin = false } = {}) {
   const row = (e) => `<li class="${e.player_id === meId ? 'me' : ''}">
     <span class="pos">${e.position}</span>${prioBadge(e.priority)}
-    <span class="name">${esc(e.name)}${e.is_coordinator ? ' <span class="chip">coord.</span>' : ''}
-      <small>${esc(e.reason)} · ${e.signed_up_at ? esc(fmtTime(e.signed_up_at)) : ''}${e.added_by_admin ? ' · añadido por coordinación' : ''}</small></span>
-    ${admin ? `<button class="btn-sm btn-ghost" data-act="adminSetResponse" data-pid="${e.player_id}" data-answer="no" title="Quitar">✕</button>` : ''}
+    <span class="name">${esc(e.name)}${e.player_id === meId ? ' <span class="muted">(tú)</span>' : ''}${e.is_coordinator ? ' <span class="chip">Coordinación</span>' : ''}
+      <small>${esc(e.reason)}${e.signed_up_at ? ` · ${esc(fmtTime(e.signed_up_at))}` : ''}${e.added_by_admin ? ' · añadido por coordinación' : ''}</small></span>
+    ${admin ? `<button class="btn btn-ghost btn-icon" data-act="adminSetResponse" data-pid="${e.player_id}" data-answer="no" aria-label="Quitar a ${esc(e.name)} de la lista" title="Quitar de la lista">${icon('x')}</button>` : ''}
   </li>`;
   let html = `<div class="divider">Titulares</div>`;
-  html += s.titulares.length ? `<ul class="list">${s.titulares.map(row).join('')}</ul>` : '<p class="muted small">Nadie apuntado todavía.</p>';
+  html += s.titulares.length ? `<ul class="list">${s.titulares.map(row).join('')}</ul>` : '<p class="muted small">Aún no se ha apuntado nadie. Las primeras plazas son para quien no vino la semana pasada.</p>';
   if (s.reservas.length) html += `<div class="divider">Reservas</div><ul class="list">${s.reservas.map(row).join('')}</ul>`;
   if (s.no_van.length) {
-    html += `<div class="divider">No van (${s.no_van.length})</div><p class="small muted">${s.no_van.map((n) => esc(n.name)).join(', ')}</p>`;
+    html += `<div class="divider">No van · ${s.no_van.length}</div><p class="small muted">${s.no_van.map((n) => esc(n.name)).join(', ')}</p>`;
   }
   return html;
 }
@@ -292,7 +310,7 @@ actions.logout = async () => {
 
 actions.answerYes = async (el) => {
   el.disabled = true;
-  try { await api(`/api/sessions/${el.dataset.id}/response`, { method: 'PUT', body: { answer: 'yes' } }); toast('¡Apuntado/a! ⚽'); }
+  try { await api(`/api/sessions/${el.dataset.id}/response`, { method: 'PUT', body: { answer: 'yes' } }); toast('¡Dentro! Te esperamos el miércoles'); }
   finally { render(); }
 };
 
@@ -314,13 +332,14 @@ actions.answerNo = async (el) => {
     }
   }
   $dialog.innerHTML = `<form method="dialog" class="stack">
-    <h2>¿No vas el ${esc(fmtDate(sess.date))}?</h2>
-    ${warning ? `<div class="status-box warn small">${warning}</div>` : ''}
-    <label class="field">Motivo (opcional, lo verá Coordinación)<textarea id="cancelReason" placeholder="Ej.: lesión, trabajo…"></textarea></label>
+    <h2>¿No puedes ir el ${esc(fmtDate(sess.date).toLowerCase())}?</h2>
+    ${warning ? `<div class="status-box warn small">${icon('alert')}<div>${warning}</div></div>` : ''}
+    <label class="field">Motivo (opcional)<textarea id="cancelReason" placeholder="Lesión, trabajo, viaje…"></textarea></label>
+    <p class="small muted" style="margin:0">Si hay un motivo justificado, cuéntalo aquí: Coordinación lo revisa antes de aplicar nada.</p>
     ${s.my_entry && sess.finalized_at ? '<label><input type="checkbox" id="cancelNotified"> He avisado a Coordinación</label>' : ''}
-    <div class="row" style="justify-content:flex-end">
+    <div class="dialog-actions">
       <button value="cancel" class="btn-ghost">Volver</button>
-      <button value="ok" class="btn-no" id="confirmNo">No voy</button>
+      <button value="ok" class="btn-danger" id="confirmNo">${s.my_entry ? 'Borrarme' : 'No puedo ir'}</button>
     </div></form>`;
   $dialog.showModal();
   $dialog.onclose = async () => {
@@ -332,7 +351,7 @@ actions.answerNo = async (el) => {
     };
     try {
       const r = await api(`/api/sessions/${sess.id}/response`, { method: 'PUT', body });
-      toast(r.infraction ? `Anotado. Coordinación revisará: ${r.infraction.label}` : 'Anotado: no vas', !!r.infraction);
+      toast(r.infraction ? `Anotado. Coordinación revisará: ${r.infraction.label.toLowerCase()}` : 'Anotado: no vienes este miércoles', !!r.infraction);
     } catch (e) { toast(e.message, true); }
     render();
   };
@@ -357,10 +376,10 @@ async function viewStats(sub) {
 
 function renderDashboard() {
   const sub = S.statsSub;
-  $app.innerHTML = `<h1>Clasificación</h1>
+  $app.innerHTML = `<div class="page-head"><h1>Clasificación</h1></div>
     <nav class="seg-tabs" aria-label="Vista">
-      <a href="#/clasificacion" class="${sub === 'general' ? 'active' : ''}">General</a>
-      <a href="#/clasificacion/yo" class="${sub === 'yo' ? 'active' : ''}">Mi temporada</a>
+      <a href="#/clasificacion"${sub === 'general' ? ' aria-current="page"' : ''}>General</a>
+      <a href="#/clasificacion/yo"${sub === 'yo' ? ' aria-current="page"' : ''}>Mi temporada</a>
     </nav>
     <div id="dashBody"></div>`;
   const body = document.getElementById('dashBody');
@@ -376,6 +395,9 @@ window.addEventListener('resize', () => {
 const statTile = (label, value, sub = '') =>
   `<div class="stat"><div class="stat-label">${esc(label)}</div><div class="stat-value">${esc(value)}</div>${sub ? `<div class="stat-sub">${esc(sub)}</div>` : ''}</div>`;
 
+// Puesto: 1 + cuántas personas tienen más (los empates comparten puesto)
+const rankIn = (players, key, value) => 1 + players.filter((p) => p[key] > value).length;
+
 // Ranking con barras (top N); la persona que mira se resalta en su color
 function barList(players, key, { top = 5, meId = null, unit = '' } = {}) {
   const sorted = players.filter((p) => p[key] > 0).sort((a, b) => b[key] - a[key] || a.name.localeCompare(b.name));
@@ -385,10 +407,10 @@ function barList(players, key, { top = 5, meId = null, unit = '' } = {}) {
   const meIdx = sorted.findIndex((p) => p.player_id === meId);
   if (meIdx >= top) rows = [...rows, sorted[meIdx]];
   return `<ol class="barlist">${rows.map((p) => {
-    const rank = sorted.findIndex((x) => x.player_id === p.player_id) + 1;
+    const rank = rankIn(players, key, p[key]);
     return `<li class="${p.player_id === meId ? 'me' : ''}">
       <span class="rank">${rank}</span><span class="who">${esc(p.name)}${p.player_id === meId ? ' (tú)' : ''}</span>
-      <span class="val">${p[key]}${unit}</span>
+      <span class="val">${nf(p[key])}${unit}</span>
       <span class="track"><span style="width:${pct(p[key], max)}%"></span></span></li>`;
   }).join('')}</ol>`;
 }
@@ -407,19 +429,19 @@ function renderGeneral(body) {
   const infTotal = g.infractions_by_type.reduce((a, r) => a + r.n, 0);
 
   body.innerHTML = `
-  <div class="kpis">
-    ${statTile('Entrenamientos jugados', sessions.length)}
-    ${statTile('Asistencia media', avgAtt ? avgAtt.toFixed(1) : '—', avgCap ? `${pct(avgAtt, avgCap)} % de las plazas` : '')}
-    ${statTile('Goles en la temporada', totalGoals, sessions.length ? `${(totalGoals / sessions.length).toFixed(1)} por entreno` : '')}
-    ${statTile('Cumplen el mínimo', `${meeting}/${eligible.length}`, `${data.min_per_quarter} entrenos este trimestre`)}
-    ${statTile('Incidencias confirmadas', infTotal)}
+  <div class="statstrip">
+    ${statTile('Entrenos jugados', nf(sessions.length))}
+    ${statTile('Asistencia media', avgAtt ? nf(avgAtt, 1) : '—', avgCap ? `${pct(avgAtt, avgCap)} % de las plazas` : '')}
+    ${statTile('Goles', nf(totalGoals), sessions.length ? `${nf(totalGoals / sessions.length, 1)} por entreno` : '')}
+    ${statTile('Cumplen el mínimo', `${meeting} de ${eligible.length}`, `${data.min_per_quarter} entrenos este trimestre`)}
+    ${statTile('Incidencias', nf(infTotal), 'confirmadas')}
   </div>
   <div class="grid grid-2">
     <div class="card"><h2>Asistencia por entreno</h2><p class="small muted">Personas que jugaron cada miércoles; la línea marca las plazas.</p><div id="chAtt"></div></div>
     <div class="card"><h2>Goles por entreno</h2><p class="small muted">Suma de todos los partidos del día.</p><div id="chGoals"></div></div>
   </div>
   <div class="card"><h2>Líderes</h2>
-    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
+    <div class="leaders">
       <div><h3>Puntos</h3>${barList(active, 'points', { meId })}</div>
       <div><h3>Goles</h3>${barList(active, 'goals', { meId })}</div>
       <div><h3>Asistencias de gol</h3>${barList(active, 'assists', { meId })}</div>
@@ -428,7 +450,7 @@ function renderGeneral(body) {
       <div><h3>Paradas</h3>${barList(active, 'saves', { meId })}</div>
     </div></div>
   ${g.infractions_by_type.length ? `<div class="card"><h2>Incidencias por tipo</h2>
-    <ol class="barlist">${g.infractions_by_type.sort((a, b) => b.n - a.n).map((r) => `<li>
+    <ol class="barlist wrap">${g.infractions_by_type.sort((a, b) => b.n - a.n).map((r) => `<li>
       <span class="rank"></span><span class="who">${esc(r.label)}</span><span class="val">${r.n}</span>
       <span class="track"><span style="width:${pct(r.n, Math.max(...g.infractions_by_type.map((x) => x.n)))}%"></span></span></li>`).join('')}</ol></div>` : ''}
   <div class="card"><h2>Clasificación completa</h2><div id="statsTable"></div></div>`;
@@ -436,13 +458,13 @@ function renderGeneral(body) {
   Charts.columns(document.getElementById('chAtt'), {
     data: sessions.map((s) => ({ x: shortDate(s.date), title: fmtDate(s.date), value: s.attended,
       detail: [s.late ? `${s.late} tarde` : '', s.no_show ? `${s.no_show} sin presentarse` : '', s.left_out ? `${s.left_out} fuera por lista llena` : ''].filter(Boolean) })),
-    colorVar: '--chart-group', label: 'asistentes',
+    colorVar: '--chart-group', label: 'asistentes', format: (v) => nf(v),
     refValue: sessions.length ? sessions[sessions.length - 1].capacity : 0, refLabel: 'plazas',
   });
   Charts.columns(document.getElementById('chGoals'), {
     data: sessions.map((s) => ({ x: shortDate(s.date), title: fmtDate(s.date), value: s.goals,
       detail: [`${s.matches} partido${s.matches === 1 ? '' : 's'}`] })),
-    colorVar: '--chart-group', label: 'goles',
+    colorVar: '--chart-group', label: 'goles', format: (v) => nf(v),
   });
   renderStatsTable();
 }
@@ -463,19 +485,23 @@ function renderStatsTable() {
     return dir * (va - vb) || a.name.localeCompare(b.name);
   });
   document.getElementById('statsTable').innerHTML = `<div class="table-wrap"><table>
-    <thead><tr>${cols.map(([k, l, n]) => `<th class="${n ? 'num' : ''}" data-act="sortStats" data-key="${k}" tabindex="0">${l}${k === key ? (dir < 0 ? ' ▾' : ' ▴') : ''}</th>`).join('')}</tr></thead>
-    <tbody>${rows.map((p) => `<tr class="${p.active ? '' : 'dim'}"${p.player_id === meId ? ' style="font-weight:700"' : ''}>${cols.map(([k, , n]) => {
-      let v = esc(p[k]);
+    <thead><tr>${cols.map(([k, l, n]) => `<th class="${n ? 'num' : ''}" data-act="sortStats" data-key="${k}" tabindex="0"
+      aria-sort="${k === key ? (dir < 0 ? 'descending' : 'ascending') : 'none'}">${l}${k === key ? icon(dir < 0 ? 'sort-down' : 'sort-up') : ''}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map((p) => `<tr class="${p.active ? '' : 'dim'}${p.player_id === meId ? ' me' : ''}">${cols.map(([k, , n]) => {
+      let v = typeof p[k] === 'number' ? nf(p[k]) : esc(p[k]);
       if (k === 'name') v = `${esc(p.name)}${p.expelled ? ' <span class="chip danger">fuera</span>' : ''}`;
       if (k === 'current_quarter_count') {
         const low = !p.attendance_exempt && p[k] < data.min_per_quarter;
-        v = p.attendance_exempt ? '<span class="chip">exento</span>' : `<span class="chip ${low ? 'warn' : 'ok'}">${p[k]}/${data.min_per_quarter}</span>`;
+        v = p.attendance_exempt ? '<span class="chip">Exención</span>' : `<span class="chip ${low ? 'warn' : 'ok'}">${p[k]} de ${data.min_per_quarter}</span>`;
       }
       return `<td class="${n ? 'num' : ''}">${v}</td>`;
     }).join('')}</tr>`).join('')}</tbody></table></div>
-    <p class="small muted" style="margin-top:.75rem">Puntos: 3 por partido ganado y 1 por empate con tu equipo. «Trim.» = entrenos este trimestre
-    (mínimo ${data.min_per_quarter}; quedarse fuera por lista llena cuenta a favor).</p>`;
+    <p class="small muted" style="margin-top:.75rem">Puntos: 3 por partido ganado y 1 por empate con tu equipo. «Trim.» son los entrenos de este trimestre
+    (mínimo ${data.min_per_quarter}; si te quedaste fuera por lista llena, cuenta a favor).</p>`;
 }
+document.addEventListener('keydown', (e) => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('th[data-act="sortStats"]')) { e.preventDefault(); actions.sortStats(e.target); }
+});
 actions.sortStats = (el) => {
   const k = el.dataset.key;
   S.sort = { key: k, dir: S.sort.key === k ? -S.sort.dir : (k === 'name' ? 1 : -1) };
@@ -487,45 +513,43 @@ function renderPersonal(body) {
   const meId = S.me?.player?.id;
   const me = data.players.find((p) => p.player_id === meId);
   const d = S.dash.me;
-  if (!me) { body.innerHTML = '<div class="card empty">No hay datos de tu temporada todavía.</div>'; return; }
+  if (!me) { body.innerHTML = '<div class="card empty"><h2>Aún no hay datos de tu temporada</h2><p class="muted">Aparecerán después de tu primer entreno.</p></div>'; return; }
   const active = data.players.filter((p) => p.active);
-  const rankOf = (key) => 1 + active.filter((p) => p[key] > me[key]).length;
+  const rankOf = (key) => rankIn(active, key, me[key]);
   const held = S.dash.group.sessions.length;
   const played = d.history.filter((h) => h.team);
   const form = played.slice(-10).map((h) => {
     const r = h.wins > h.losses ? 'w' : h.wins < h.losses ? 'l' : 'd';
-    return `<span class="${r}" title="${esc(fmtDate(h.date))}: ${h.wins}G ${h.draws}E ${h.losses}P">${{ w: 'G', d: 'E', l: 'P' }[r]}</span>`;
+    const word = { w: 'Ganado', d: 'Empate', l: 'Perdido' }[r];
+    return `<span class="${r}" title="${esc(fmtDate(h.date))}: ${word} (${h.wins}-${h.draws}-${h.losses})" aria-label="${esc(fmtShort(h.date))}: ${word}">${{ w: 'G', d: 'E', l: 'P' }[r]}</span>`;
   }).join('');
   const qMin = data.min_per_quarter;
   const qCount = me.current_quarter_count;
+  const myInf = S.me?.infractions || [];
 
   body.innerHTML = `
   <div class="grid grid-2">
-    <div class="card featured">
-      <div class="stat-label">Tus puntos esta temporada</div>
-      <div class="hero-figure">${me.points}</div>
-      <p class="muted" style="margin:.4rem 0 0">Puesto <strong>${rankOf('points')}</strong> de ${active.length} · ${me.wins} G · ${me.draws} E · ${me.losses} P</p>
-      ${form ? `<div class="stat-label" style="margin-top:1rem">Últimos entrenos (G/E/P)</div><div class="form-strip">${form}</div>` : ''}
+    <div class="card">
+      <h2>Vas ${rankOf('points')}.º de ${active.length} con ${plural(me.points, 'punto', 'puntos')}</h2>
+      <p class="muted">${plural(me.wins, 'victoria', 'victorias')}, ${plural(me.draws, 'empate', 'empates')} y ${plural(me.losses, 'derrota', 'derrotas')}.</p>
+      ${form ? `<div class="stat-label" style="margin:.25rem 0 .35rem">Últimos entrenos (G ganado · E empate · P perdido)</div><div class="form-strip">${form}</div>` : ''}
     </div>
     <div class="card">
       <h2>Este trimestre</h2>
-      ${me.attendance_exempt ? '<p class="muted">Estás exento/a del mínimo de asistencia.</p>' : `
-      <p><strong>${qCount}</strong> de ${qMin} entrenos mínimos ${qCount >= qMin ? '✅' : ''}</p>
-      <div class="meter ${qCount >= qMin ? '' : 'warn'}" role="meter" aria-valuemin="0" aria-valuemax="${qMin}" aria-valuenow="${qCount}"><span style="width:${Math.min(100, pct(qCount, qMin))}%"></span></div>
-      <p class="small muted" style="margin-top:.5rem">${qCount >= qMin ? 'Cumples el mínimo.' : `Te faltan ${qMin - qCount} para el mínimo.`} Quedarse fuera por lista llena cuenta a favor.</p>`}
-      <div class="kpis" style="margin:1rem 0 0">
-        ${statTile('Racha actual', d.streak, `mejor: ${d.best_streak}`)}
-        ${statTile('Incidencias', me.infractions, me.serious_infractions ? `${me.serious_infractions} grave(s)` : 'ninguna grave')}
-      </div>
+      ${me.attendance_exempt ? '<p class="muted">Tienes exención del mínimo de asistencia.</p>' : `
+      <p><strong>${qCount}</strong> de ${qMin} entrenos mínimos</p>
+      <div class="meter ${qCount >= qMin ? '' : 'warn'}" role="meter" aria-label="Entrenos del trimestre" aria-valuemin="0" aria-valuemax="${qMin}" aria-valuenow="${qCount}"><span style="width:${Math.min(100, pct(qCount, qMin))}%"></span></div>
+      <p class="small muted" style="margin-top:.5rem">${qCount >= qMin ? 'Cumples el mínimo.' : `Te ${qMin - qCount === 1 ? 'falta 1' : `faltan ${qMin - qCount}`} para el mínimo.`} Si te quedas fuera por lista llena, cuenta a favor.</p>`}
+      <p class="small" style="margin:.75rem 0 0">Racha: <strong>${plural(d.streak, 'entreno seguido', 'entrenos seguidos')}</strong> · mejor racha: ${nf(d.best_streak)}</p>
     </div>
   </div>
-  <div class="kpis">
-    ${statTile('Entrenos', me.attended, held ? `${pct(me.attended, held)} % de ${held}` : '')}
-    ${statTile('Goles', me.goals, `puesto ${rankOf('goals')} · ${me.played ? (me.goals / Math.max(1, played.length)).toFixed(1) : '0'} por entreno`)}
-    ${statTile('Asistencias', me.assists, `puesto ${rankOf('assists')}`)}
-    ${statTile('MVP', me.mvps, `puesto ${rankOf('mvps')}`)}
-    ${statTile('Victorias', me.played ? `${pct(me.wins, me.played)} %` : '—', `${me.played} partidos`)}
-    ${statTile('Paradas', me.saves)}
+  <div class="statstrip">
+    ${statTile('Entrenos', nf(me.attended), held ? `${pct(me.attended, held)} % de ${held}` : '')}
+    ${statTile('Goles', nf(me.goals), `${rankOf('goals')}.º · ${nf(played.length ? me.goals / played.length : 0, 1)} por entreno`)}
+    ${statTile('Asistencias', nf(me.assists), `${rankOf('assists')}.º`)}
+    ${statTile('MVP', nf(me.mvps), `${rankOf('mvps')}.º`)}
+    ${statTile('Victorias', me.played ? `${pct(me.wins, me.played)} %` : '—', plural(me.played, 'partido', 'partidos'))}
+    ${statTile('Paradas', nf(me.saves))}
   </div>
   <div class="grid grid-2">
     <div class="card"><h2>Puntos acumulados</h2><p class="small muted">Tú frente a la media del grupo.</p><div id="chCum"></div></div>
@@ -539,17 +563,20 @@ function renderPersonal(body) {
       <td>${h.team ? `<span class="team-dot" style="background:${esc(h.team.color || '#ccc')}"></span> ${esc(h.team.name)}` : '—'}</td>
       <td class="num">${h.team ? `${h.wins}-${h.draws}-${h.losses}` : '—'}</td>
       <td class="num">${h.points}</td><td class="num">${h.goals}</td><td class="num">${h.assists}</td><td class="num">${h.saves}</td>
-      <td>${h.mvp ? '⭐ MVP' : ''}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">Aún no hay entrenamientos jugados.</p>'}</div>`;
+      <td>${h.mvp ? `${icon('star')} MVP` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">Aún no hay entrenos jugados.</p>'}</div>
+  <div class="card"><h2>Mis incidencias</h2>${myInf.length ? `<ul class="list">${myInf.map((i) => `
+    <li><span class="name">${esc(i.label)}<small>${esc(fmtShort(i.date))} · ${i.weeks === 2 ? '2 semanas en P3' : '1 semana en P3'}</small></span>
+    ${infStatusChip(i.status)}</li>`).join('')}</ul>` : '<p class="muted small">Ninguna. Sigue así.</p>'}</div>`;
 
   Charts.line(document.getElementById('chCum'), {
     data: d.cumulative.map((c) => ({ x: shortDate(c.date), title: fmtDate(c.date), me: c.me, group: c.group })),
     series: [{ key: 'me', label: 'Tú', colorVar: '--chart-me' }, { key: 'group', label: 'Media del grupo', colorVar: '--chart-group' }],
-    format: (v) => (Number.isInteger(v) ? String(v) : v.toFixed(1)),
+    format: (v) => nf(v, Number.isInteger(v) ? 0 : 1),
   });
   Charts.columns(document.getElementById('chMyGoals'), {
     data: d.history.map((h) => ({ x: shortDate(h.date), title: fmtDate(h.date), value: h.goals,
       detail: [h.assists ? `${h.assists} asistencia${h.assists === 1 ? '' : 's'}` : '', h.mvp ? 'MVP' : ''].filter(Boolean) })),
-    colorVar: '--chart-me', label: 'goles',
+    colorVar: '--chart-me', label: 'goles', format: (v) => nf(v),
   });
 }
 
@@ -558,23 +585,25 @@ function renderPersonal(body) {
 async function viewResultsList() {
   if (!S.token) return viewHome();
   const sessions = (await api('/api/sessions')).filter((s) => s.has_results);
-  $app.innerHTML = `<h1>Resultados</h1>${sessions.length ? `<div class="card"><ul class="list">${sessions.map((s) => `
-    <li><span class="name"><a href="#/resultados/${s.id}">${esc(fmtDate(s.date))}</a></span><span class="chip">${s.yes_count} apuntados</span></li>`).join('')}
-    </ul></div>` : '<div class="card empty">Todavía no hay resultados.</div>'}`;
+  $app.innerHTML = `<div class="page-head"><h1>Resultados</h1></div>${sessions.length ? `<div class="card">${sessions.map((s) => `
+    <a class="link-row" href="#/resultados/${s.id}"><span><strong>${esc(fmtDate(s.date))}</strong>
+      <span class="small muted"> · ${plural(s.yes_count, 'apuntado', 'apuntados')}</span></span>${icon('chevron')}</a>`).join('')}
+    </div>` : '<div class="card empty"><h2>Aún no hay resultados</h2><p class="muted">Aparecerán aquí cuando Coordinación los apunte al terminar cada entreno.</p></div>'}`;
 }
 
 async function viewResultsDetail(id) {
   const r = await api(`/api/sessions/${id}/results`);
-  $app.innerHTML = `<p><a href="#/resultados">← Resultados</a></p><h1>${esc(fmtDate(r.session.date))}</h1>${renderResults(r)}`;
+  $app.innerHTML = `<p style="margin:0 0 .5rem"><a href="#/resultados">Todos los resultados</a></p>
+    <div class="page-head"><h1>${esc(fmtDate(r.session.date))}</h1></div>${renderResults(r)}`;
 }
 
 function renderResults(r) {
-  if (!r.teams.length) return '<div class="card empty">Sin resultados registrados.</div>';
+  if (!r.teams.length) return '<div class="card empty"><h2>Sin resultados</h2><p class="muted">Este entreno no tiene partidos apuntados.</p></div>';
   const teamName = new Map(r.teams.map((t) => [t.id, t]));
   const dot = (t) => `<span class="team-dot" style="background:${esc(t?.color || '#ccc')}"></span>`;
   const winner = r.table[0] && r.table[0].pts > (r.table[1]?.pts ?? -1) ? r.table[0] : null;
   return `
-  ${winner ? `<div class="status-box ok"><strong>🏆 Ganador del día: ${esc(winner.name)}</strong>${winner.pts} puntos</div>` : ''}
+  ${winner ? `<div class="status-box ok">${icon('trophy')}<div><strong>Gana ${esc(winner.name)}</strong>${plural(winner.pts, 'punto', 'puntos')}</div></div>` : ''}
   <div class="grid grid-2">
     <div class="card"><h2>Clasificación del día</h2><div class="table-wrap"><table>
       <thead><tr><th>Equipo</th><th class="num">PJ</th><th class="num">G</th><th class="num">E</th><th class="num">P</th><th class="num">GF</th><th class="num">GC</th><th class="num">Pts</th></tr></thead>
@@ -589,7 +618,7 @@ function renderResults(r) {
     <div class="card"><h2>Equipos</h2>${r.teams.map((t) => `<p><strong>${dot(t)} ${esc(t.name)}</strong><br><span class="small">${t.players.map((p) => esc(p.name)).join(', ') || '—'}</span></p>`).join('')}</div>
     <div class="card"><h2>Estadísticas</h2>${r.stats.length ? `<div class="table-wrap"><table>
       <thead><tr><th>Jugador</th><th class="num">Goles</th><th class="num">Asist.</th><th class="num">Paradas</th><th></th></tr></thead>
-      <tbody>${r.stats.map((s) => `<tr><td>${esc(s.name)}</td><td class="num">${s.goals}</td><td class="num">${s.assists}</td><td class="num">${s.saves}</td><td>${s.mvp ? '⭐ MVP' : ''}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">—</p>'}
+      <tbody>${r.stats.map((s) => `<tr><td>${esc(s.name)}</td><td class="num">${s.goals}</td><td class="num">${s.assists}</td><td class="num">${s.saves}</td><td>${s.mvp ? `${icon('star')} MVP` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">Sin estadísticas individuales.</p>'}
     </div>
   </div>
   ${r.notes ? `<div class="card"><h2>Notas</h2><p style="white-space:pre-wrap">${esc(r.notes)}</p></div>` : ''}`;
@@ -599,54 +628,54 @@ function renderResults(r) {
 
 async function viewRules() {
   const { infraction_types: T } = await loadRules();
-  $app.innerHTML = `<h1>Normas de los entrenamientos</h1>
+  $app.innerHTML = `<div class="page-head"><h1>Normas</h1></div>
   <div class="card"><h2>Entrenamientos</h2><ul class="rules">
-    <li>Miércoles de 22:00 a 23:00 en el Polideportivo Marqués de Samaranch. Llega a las 21:45 para cambiarte.</li>
-    <li>La convocatoria se abre el <strong>domingo a las 17:00</strong>. Si no estás seguro/a de poder ir, no te apuntes.</li>
-    <li>Convocatorias de 14 o 16 personas. Si está llena quedas en reservas: subes automáticamente si alguien se borra.</li>
-    <li>El <strong>lunes</strong> se genera la lista final.</li>
-    <li>No te borres con menos de un día de antelación.</li></ul></div>
-  <div class="card"><h2>Sistema de prioridades</h2>
-    <p>El orden para entrar se decide primero por prioridad y después por la hora de inscripción.</p>
-    <ul class="rules">
-      <li>${prioBadge(1)} Quien <strong>no</strong> asistió al entrenamiento de la semana anterior, y al menos un coordinador.</li>
-      <li>${prioBadge(2)} Quien <strong>sí</strong> asistió al entrenamiento de la semana anterior.</li>
-      <li>${prioBadge(3)} Quien la semana anterior cometió alguna de estas infracciones:</li>
+    <li>Miércoles de 22:00 a 23:00 en el Polideportivo Marqués de Samaranch. Llega 15 minutos antes para cambiarte.</li>
+    <li>Coordinación publica la convocatoria, normalmente el <strong>domingo a las 17:00</strong>. Si no sabes seguro si podrás ir, no te apuntes.</li>
+    <li>Hay 16 plazas (21 si se juega triangular). Si está llena, quedas en reservas y entras automáticamente cuando alguien se borra.</li>
+    <li>La lista se completa en directo. Coordinación puede cerrarla antes del entreno.</li>
+    <li>Puedes borrarte sin penalización hasta el <strong>martes a las 15:00</strong>.</li></ul></div>
+  <div class="card"><h2>Prioridades</h2>
+    <p>Para entrar cuenta primero la prioridad y después la hora de inscripción.</p>
+    <ul class="list">
+      <li>${prioBadge(1)}<span class="name">No viniste al entreno de la semana anterior. Siempre entra también al menos una persona de Coordinación.</span></li>
+      <li>${prioBadge(2)}<span class="name">Viniste al entreno de la semana anterior.</span></li>
+      <li>${prioBadge(3)}<span class="name">La semana anterior cometiste alguna de estas infracciones:</span></li>
     </ul>
-    <ul class="list">${Object.values(T).map((t) => `<li><span class="name">${esc(t.label)}</span>
+    <ul class="list" style="margin-top:.25rem">${Object.values(T).map((t) => `<li><span class="name">${esc(t.label)}</span>
       <span class="chip ${t.serious ? 'danger' : t.weeks === 2 ? 'warn' : ''}">${t.weeks === 2 ? '2 semanas' : '1 semana'}${t.serious ? ' · grave' : ''}</span></li>`).join('')}</ul>
-    <p class="small muted" style="margin-top:.75rem">Quien cometa dos faltas graves en la temporada queda automáticamente fuera del equipo.</p></div>
+    <p class="small muted" style="margin-top:.75rem">Dos faltas graves en la temporada suponen quedar fuera del equipo.</p></div>
   <div class="card"><h2>Asistencia</h2><ul class="rules">
-    <li>Mínimo <strong>4 entrenamientos cada tres meses</strong> para seguir inscrito/a.</li>
-    <li>Por motivos justificados (lesiones, períodos fuera…) no se tiene en cuenta.</li>
-    <li>Si te quedaste fuera porque la convocatoria estaba llena, no cuenta como falta.</li></ul></div>`;
+    <li>Hacen falta <strong>4 entrenos cada tres meses</strong> para seguir en la sección.</li>
+    <li>Con motivo justificado (lesión, temporada fuera…) Coordinación te da una exención.</li>
+    <li>Si te quedaste fuera porque la lista estaba llena, no cuenta como falta.</li></ul></div>`;
 }
 
 // ---------- Coordinación ----------
 
 const ADMIN_TABS = [
   ['convocatoria', 'Convocatoria'], ['asistencia', 'Asistencia'], ['resultados', 'Resultados'], ['material', 'Material'],
-  ['incidencias', 'Incidencias'], ['jugadores', 'Jugadores'], ['actividad', 'Actividad'], ['clasificacion', 'Clasificación'],
+  ['incidencias', 'Incidencias'], ['jugadores', 'Jugadores'], ['actividad', 'Actividad'],
 ];
 
 async function viewAdmin(tab = 'convocatoria') {
   if (!S.token) return viewLogin();
   if (!S.me) { try { S.me = await api('/api/me'); } catch (e) { return viewLogin(); } }
   if (!canManage()) {
-    $app.innerHTML = `<div class="card empty"><h2>Sección de coordinación</h2>
-      <p>Solo para cuentas con rol de <strong>coordinador/a</strong> o <strong>gestor/a</strong>.</p>
-      <a class="btn" href="#/">Volver</a></div>`;
+    $app.innerHTML = `<div class="card empty"><h2>Esta sección es para Coordinación</h2>
+      <p class="muted">Si te toca ayudar con las convocatorias, pide a Coordinación el rol de gestión.</p>
+      <a class="btn" href="#/">Volver a la convocatoria</a></div>`;
     return;
   }
-  if (tab === 'clasificacion') {
-    await viewStats();
-    $app.insertAdjacentHTML('afterbegin', adminTabsHtml(tab, null));
-    return;
-  }
+  if (tab === 'clasificacion') { location.hash = '#/clasificacion'; return; }
   const ov = await api('/api/admin/overview');
   S.overview = ov;
-  if (!S.adminSessionId || !ov.sessions.some((s) => s.id === S.adminSessionId)) {
-    S.adminSessionId = ov.current_id || ov.sessions[0]?.id || null;
+  // Sin elección explícita: asistencia, resultados y material van sobre el último entreno jugado;
+  // la convocatoria, sobre el próximo
+  if (!S.sessionPicked || !ov.sessions.some((s) => s.id === S.adminSessionId)) {
+    const lastPlayed = ov.sessions.find((s) => s.has_started && !s.cancelled)?.id;
+    S.adminSessionId = (['asistencia', 'resultados', 'material'].includes(tab) && lastPlayed)
+      || ov.current_id || ov.sessions[0]?.id || null;
   }
   const head = adminTabsHtml(tab, ov) + sessionPicker(ov, tab);
   const fn = {
@@ -659,21 +688,22 @@ async function viewAdmin(tab = 'convocatoria') {
 }
 
 function adminTabsHtml(tab, ov) {
-  return `<div class="row spread"><h1 style="margin:0">Coordinación</h1><button class="btn-sm btn-ghost" data-act="logout">Salir</button></div>
-  <nav class="tabs">${ADMIN_TABS.map(([k, l]) => `<a href="#/admin/${k}" class="${k === tab ? 'active' : ''}">${l}${k === 'incidencias' && ov?.pending_infractions ? `<span class="badge">${ov.pending_infractions}</span>` : ''}</a>`).join('')}</nav>`;
+  return `<div class="page-head"><h1>Coordinación</h1></div>
+  <nav class="tabs" aria-label="Secciones de coordinación">${ADMIN_TABS.map(([k, l]) => `<a href="#/admin/${k}"${k === tab ? ' aria-current="page"' : ''}>${l}${k === 'incidencias' && ov?.pending_infractions ? `<span class="badge" aria-label="${ov.pending_infractions} pendientes">${ov.pending_infractions}</span>` : ''}</a>`).join('')}</nav>`;
 }
 
 function sessionPicker(ov, tab) {
   if (['incidencias', 'jugadores', 'actividad'].includes(tab)) return '';
-  return `<div class="row" style="margin-bottom:1rem">
-    <select data-change="pickSession" aria-label="Entrenamiento">${ov.sessions.map((s) => `<option value="${s.id}" ${s.id === S.adminSessionId ? 'selected' : ''}>
-      ${esc(fmtShort(s.date))}${s.cancelled ? ' (cancelado)' : !s.is_published ? ' (borrador)' : ''}${s.id === ov.current_id ? ' · próximo' : ''}</option>`).join('')}</select>
-    <button class="btn-primary btn-sm" data-act="newSession">+ Nuevo entrenamiento</button></div>`;
+  return `<div class="row spread" style="margin-bottom:1rem">
+    <label class="field" style="flex:1 1 14rem">Entreno
+      <select data-change="pickSession">${ov.sessions.map((s) => `<option value="${s.id}" ${s.id === S.adminSessionId ? 'selected' : ''}>
+      ${esc(fmtShort(s.date))}${s.cancelled ? ' · cancelado' : !s.is_published ? ' · borrador' : ''}${s.id === ov.current_id ? ' · el próximo' : ''}</option>`).join('')}</select></label>
+    <button class="btn-primary" data-act="newSession" style="align-self:flex-end">${icon('plus')} Nueva convocatoria</button></div>`;
 }
 
 actions.pickSession = (el) => {
   S.adminSessionId = Number(el.value); sessionStorage.setItem('f7_admin_session', el.value);
-  S.res = null; S.att = null; render();
+  S.sessionPicked = true; S.res = null; S.att = null; render();
 };
 actions.newSession = () => {
   $dialog.innerHTML = `<form method="dialog" class="stack"><h2>Nueva convocatoria</h2>
@@ -685,14 +715,14 @@ actions.newSession = () => {
     </div>
     <label class="field">Lugar<input id="nsLoc" value="Polideportivo Marqués de Samaranch"></label>
     <label class="field">Notas para el equipo (opcional)<textarea id="nsNotes" placeholder="Ej.: traed camiseta clara y oscura"></textarea></label>
-    <fieldset class="stack" style="border:1px solid var(--border);border-radius:12px;padding:.75rem">
+    <fieldset class="stack" style="border:1px solid var(--border);border-radius:var(--r-sm);padding:.75rem">
       <legend class="small muted">Publicación</legend>
       <label><input type="radio" name="nsPub" value="open" checked> Publicar y abrir inscripciones ya</label>
       <label><input type="radio" name="nsPub" value="sunday"> Publicar, inscripciones desde el domingo a las 17:00</label>
       <label><input type="radio" name="nsPub" value="draft"> Guardar como borrador (no la ven los jugadores)</label>
     </fieldset>
-    <p class="small muted">16 plazas = un partido de 2 equipos; 21 = triangular de 3 equipos con partidos de 8 minutos.</p>
-    <div class="row" style="justify-content:flex-end"><button value="cancel" class="btn-ghost">Cancelar</button><button value="ok" class="btn-primary">Crear</button></div></form>`;
+    <p class="small muted">Con 16 plazas se juega un partido; con 21, triangular de tres equipos con partidos de 8 minutos.</p>
+    <div class="dialog-actions"><button value="cancel" class="btn-ghost">Volver</button><button value="ok" class="btn-primary">Crear convocatoria</button></div></form>`;
   $dialog.showModal();
   $dialog.onclose = async () => {
     if ($dialog.returnValue !== 'ok') return;
@@ -707,14 +737,14 @@ actions.newSession = () => {
         notes: document.getElementById('nsNotes').value,
         publish: pub !== 'draft', open_now: pub === 'open',
       } });
-      S.adminSessionId = r.id; sessionStorage.setItem('f7_admin_session', r.id);
+      S.adminSessionId = r.id; S.sessionPicked = true; sessionStorage.setItem('f7_admin_session', r.id);
       toast(pub === 'draft' ? 'Borrador guardado' : 'Convocatoria publicada'); location.hash = '#/admin/convocatoria'; render();
     } catch (e) { toast(e.message, true); }
   };
 };
 
 function noSession(el) {
-  el.innerHTML = '<div class="card empty"><h2>No hay entrenamientos</h2><p>Crea el primero con «+ Nuevo entrenamiento».</p></div>';
+  el.innerHTML = '<div class="card empty"><h2>Aún no hay convocatorias</h2><p class="muted">Crea la primera con «Nueva convocatoria». Puedes dejarla en borrador hasta el domingo.</p></div>';
 }
 
 // --- Convocatoria ---
@@ -735,25 +765,27 @@ async function adminConvocatoria(el) {
   S.players = players;
   const inList = new Set([...d.titulares, ...d.reservas].map((e) => e.player_id));
   const yes = d.titulares.length + d.reservas.length;
-  const pubChip = s.cancelled ? '<span class="chip danger">Cancelado</span>'
-    : !s.is_published ? '<span class="chip warn">Borrador · no la ven los jugadores</span>'
-      : s.is_open ? '<span class="chip ok">Publicada · inscripciones abiertas</span>'
-        : s.has_started ? '<span class="chip">Publicada · cerrada</span>'
-          : `<span class="chip">Publicada · abre ${esc(fmtDateTime(s.opens_at))}</span>`;
+  const pubState = s.cancelled ? { cls: 'is-cancel', ic: 'x', t: 'Entrenamiento cancelado', p: 'Los jugadores lo ven como cancelado.' }
+    : !s.is_published ? { cls: 'is-wait', ic: 'lock', t: 'Borrador', p: 'Los jugadores todavía no la ven.' }
+      : s.is_open ? { cls: 'is-in', ic: 'check', t: 'Publicada · inscripciones abiertas', p: `${plural(yes, 'persona apuntada', 'personas apuntadas')} de ${s.capacity} plazas.` }
+        : s.has_started ? { cls: '', ic: 'lock', t: 'Publicada · inscripciones cerradas', p: 'El entreno ya ha empezado.' }
+          : { cls: 'is-wait', ic: 'clock', t: 'Publicada', p: `Las inscripciones se abren el ${fmtDateTime(s.opens_at)}.` };
   const pubButtons = s.cancelled || s.has_started ? '' : !s.is_published
-    ? `<button class="btn-primary" data-act="publishSession" data-open="1">🚀 Publicar y abrir inscripciones ya</button>
-       <button data-act="publishSession" data-open="0">Publicar (abre ${esc(fmtDateTime(s.opens_at))})</button>`
-    : `${!s.is_open ? '<button class="btn-primary" data-act="publishSession" data-open="1">Abrir inscripciones ya</button>' : ''}
-       ${yes ? '' : '<button class="btn-ghost" data-act="unpublishSession">Pasar a borrador</button>'}`;
+    ? `<button class="btn-primary" data-act="publishSession" data-open="1">${icon('send')} Publicar y abrir inscripciones</button>
+       <button class="btn-quiet" data-act="publishSession" data-open="0">Publicar con apertura el ${esc(fmtDateTime(s.opens_at))}</button>`
+    : `${!s.is_open ? '<button class="btn-primary" data-act="publishSession" data-open="1">Abrir inscripciones ahora</button>' : ''}
+       ${yes ? '' : '<button class="btn-quiet" data-act="unpublishSession">Volver a borrador</button>'}`;
   el.innerHTML = `
-  <div class="card featured">
-    <div class="row spread">
-      <div><div class="hero-date">${esc(fmtDate(s.date))} · ${esc(s.start_time)}</div>
-        <div class="small muted">Sin penalización hasta ${esc(fmtDateTime(s.tuesday_deadline))}${d.created_by_name ? ` · creada por ${esc(d.created_by_name)}` : ''}</div></div>
-      <div class="row">${pubChip}${s.finalized_at ? `<span class="chip ok">Lista final · ${esc(fmtDateTime(s.finalized_at))}</span>` : ''}</div>
+  <section class="hero" aria-labelledby="admDate">
+    <h2 class="hero-date" id="admDate">${esc(fmtDate(s.date))}</h2>
+    <div class="hero-meta">
+      <span>${icon('clock')} ${esc(s.start_time)} · llegada ${esc(s.arrival_time || '21:45')}</span>
+      <span>${icon('pin')} ${esc(s.location)}</span>
     </div>
-    ${pubButtons ? `<div class="row" style="margin-top:1rem">${pubButtons}</div>` : ''}
-  </div>
+    <div class="hero-status ${pubState.cls}">${icon(pubState.ic)}<div><strong>${esc(pubState.t)}</strong>
+      <p>${esc(pubState.p)}${s.finalized_at ? ` Lista cerrada el ${esc(fmtDateTime(s.finalized_at))}.` : ''}${d.created_by_name ? ` Creada por ${esc(d.created_by_name)}.` : ''}</p></div></div>
+    ${pubButtons ? `<div class="hero-actions">${pubButtons}</div>` : ''}
+  </section>
 
   <div class="card"><h2>Detalles</h2>
     <form id="sessionForm" class="stack">
@@ -765,21 +797,21 @@ async function adminConvocatoria(el) {
         <label class="field">Inscripciones desde<input type="datetime-local" name="opens_at" value="${esc(toLocalInput(s.opens_at))}"></label>
       </div>
       <label class="field">Lugar<input name="location" value="${esc(s.location)}" required></label>
-      <label class="field">Notas para el equipo<textarea name="notes" placeholder="Opcional: lo verán los jugadores">${esc(s.notes || '')}</textarea></label>
+      <label class="field">Notas para el equipo<textarea name="notes" placeholder="Opcional. Las verán los jugadores en la convocatoria.">${esc(s.notes || '')}</textarea></label>
       <div class="row"><button class="btn-primary" type="submit">Guardar cambios</button>
-        <span class="small muted">Cada cambio queda registrado en «Actividad».</span></div>
+        <span class="small muted">Cada cambio queda registrado en Actividad.</span></div>
     </form>
-  </div>
-
-  <div class="row" style="margin-bottom:1rem">
-    <button data-act="finalize">${s.finalized_at ? '↻ Regenerar lista final' : '📋 Congelar lista final'}</button>
-    ${s.finalized_at ? '<button data-act="unfinalize">Volver a provisional</button>' : ''}
-    <button class="btn-ghost" data-act="toggleCancel">${s.cancelled ? 'Reactivar' : 'Cancelar entrenamiento'}</button>
-    <button class="btn-ghost" data-act="deleteSession">Eliminar</button>
+    <div class="danger-zone row">
+      <button class="btn-danger btn-sm" data-act="toggleCancel">${s.cancelled ? 'Reactivar entrenamiento' : 'Cancelar entrenamiento'}</button>
+      <button class="btn-danger btn-sm" data-act="deleteSession">${icon('trash')} Eliminar</button>
+    </div>
   </div>
 
   <div class="grid grid-2">
-    <div class="card"><div class="row spread"><h2 style="margin:0">Lista (${d.titulares.length}/${s.capacity}${d.reservas.length ? ` + ${d.reservas.length} reservas` : ''})</h2></div>
+    <div class="card"><div class="row spread" style="margin-bottom:.5rem"><h2 style="margin:0">Lista · ${d.titulares.length} de ${s.capacity}${d.reservas.length ? ` + ${plural(d.reservas.length, 'reserva', 'reservas')}` : ''}</h2>
+      <span class="row">${s.finalized_at
+        ? `<button class="btn-sm" data-act="finalize">${icon('refresh')} Recalcular</button><button class="btn-sm btn-ghost" data-act="unfinalize">Reabrir</button>`
+        : `<button class="btn-sm" data-act="finalize">${icon('lock')} Cerrar la lista</button>`}</span></div>
       ${d.previous ? `<p class="small muted">Prioridades según el entreno del ${esc(fmtShort(d.previous.date))}.</p>` : ''}
       ${PRIO_LEGEND}${renderList(d, null, { admin: true })}
       <div class="row" style="margin-top:1rem">
@@ -788,12 +820,12 @@ async function adminConvocatoria(el) {
       </div></div>
     <div class="stack">
       ${teamsProposalHtml(d.teams_proposal)}
-      <div class="card"><div class="row spread"><h2 style="margin:0">Mensaje para WhatsApp</h2><button class="btn-sm" data-act="copyWa">Copiar</button></div>
+      <div class="card"><div class="row spread" style="margin-bottom:.6rem"><h2 style="margin:0">Mensaje para WhatsApp</h2><button class="btn-sm" data-act="copyWa">${icon('copy')} Copiar</button></div>
         <pre class="wa">${esc(d.whatsapp)}</pre></div>
-      <div class="card"><h2>Sin responder (${d.sin_responder.length})</h2><p class="small">${d.sin_responder.map((p) => esc(p.name)).join(', ') || '—'}</p>
+      <div class="card"><h2>Sin responder · ${d.sin_responder.length}</h2><p class="small">${d.sin_responder.map((p) => esc(p.name)).join(', ') || 'Ha respondido todo el mundo.'}</p>
         ${d.no_van.length ? `<h3>No van</h3><ul class="list">${d.no_van.map((n) => `<li><span class="name">${esc(n.name)}<small>${esc(n.cancel_reason || '')} ${esc(fmtTime(n.updated_at))}</small></span></li>`).join('')}</ul>` : ''}
       </div>
-      ${d.infractions.length ? `<div class="card"><h2>Incidencias de este entreno</h2><ul class="list">${d.infractions.map((i) => `<li><span class="name">${esc(i.name)}<small>${esc(S.rules?.infraction_types[i.type]?.label || i.type)}</small></span>${infStatusChip(i.status)}</li>`).join('')}</ul><a href="#/admin/incidencias" class="small">Revisar incidencias →</a></div>` : ''}
+      ${d.infractions.length ? `<div class="card"><h2>Incidencias de este entreno</h2><ul class="list">${d.infractions.map((i) => `<li><span class="name">${esc(i.name)}<small>${esc(S.rules?.infraction_types[i.type]?.label || i.type)}</small></span>${infStatusChip(i.status)}</li>`).join('')}</ul><a href="#/admin/incidencias" class="small">Revisar incidencias</a></div>` : ''}
       <div class="card"><h2>Actividad de esta convocatoria</h2>${activityList(d.activity)}</div>
     </div>
   </div>`;
@@ -822,18 +854,21 @@ actions.copyWa = () => copyText(S.detail.whatsapp);
 actions.finalize = async () => {
   const r = await api(`/api/admin/sessions/${S.adminSessionId}/finalize`, { method: 'POST' });
   await copyText(r.whatsapp).catch(() => {});
-  toast('Lista final generada y copiada'); render();
+  toast('Lista cerrada. Mensaje copiado para WhatsApp'); render();
 };
 actions.unfinalize = async () => {
   await api(`/api/admin/sessions/${S.adminSessionId}/unfinalize`, { method: 'POST' }); render();
 };
 actions.toggleCancel = async () => {
-  await api(`/api/admin/sessions/${S.adminSessionId}`, { method: 'PATCH', body: { cancelled: !S.detail.session.cancelled } }); render();
+  const cancelling = !S.detail.session.cancelled;
+  if (cancelling && !await confirmDialog({ title: '¿Cancelar este entrenamiento?', body: 'Los jugadores lo verán cancelado. Podrás reactivarlo después.', confirm: 'Cancelar entrenamiento', danger: true })) return;
+  await api(`/api/admin/sessions/${S.adminSessionId}`, { method: 'PATCH', body: { cancelled: cancelling } });
+  toast(cancelling ? 'Entrenamiento cancelado' : 'Entrenamiento reactivado'); render();
 };
 actions.deleteSession = async () => {
-  if (!confirm('¿Eliminar este entrenamiento y todos sus datos (lista, asistencia, resultados)?')) return;
+  if (!await confirmDialog({ title: '¿Eliminar este entrenamiento?', body: 'Se borran la lista, la asistencia y los resultados. No se puede deshacer.', confirm: 'Eliminar', danger: true })) return;
   await api(`/api/admin/sessions/${S.adminSessionId}`, { method: 'DELETE' });
-  S.adminSessionId = null; render();
+  S.adminSessionId = null; S.sessionPicked = false; toast('Entrenamiento eliminado'); render();
 };
 actions.adminSetResponse = async (el) => {
   await api(`/api/admin/sessions/${S.adminSessionId}/responses/${el.dataset.pid}`, { method: 'PUT', body: { answer: el.dataset.answer } });
@@ -854,15 +889,14 @@ async function adminMaterial(el) {
   const opts = (sel) => `<option value="">En el club (nadie se lo lleva)</option>${active.map((p) => `<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}`;
   el.innerHTML = `
   <div class="card"><h2>¿Quién se lleva el material?</h2>
-    <p class="small muted">Al terminar el entreno, elige quién se lleva cada cosa. Queda registrado quién lo asignó y cuándo
-      ${sess ? `(se asociará al entreno del ${esc(fmtShort(sess.date))}, el elegido arriba)` : ''}.</p>
+    <p class="small muted">Al terminar el entreno, elige quién se lleva cada cosa${sess ? ` (queda asociado al entreno del ${esc(fmtShort(sess.date))})` : ''}. Se registra quién lo asignó y cuándo.</p>
     <ul class="list">${data.items.filter((i) => i.active).map((i) => `<li style="flex-wrap:wrap">
-      <span class="name"><strong>🎒 ${esc(i.name)}</strong>
+      <span class="name"><strong>${icon('bib')} ${esc(i.name)}</strong>
         <small>${i.holder_name ? `Lo tiene <b>${esc(i.holder_name)}</b>` : 'En el club'}${i.assigned_at ? ` · ${esc(i.assigned_by_name || '—')} lo asignó el ${esc(fmtDateTime(i.assigned_at))}` : ''}</small></span>
       <span class="row">
         <select id="eqHolder${i.id}" aria-label="Quién se lleva ${esc(i.name)}">${opts(i.holder_id)}</select>
         <button class="btn-primary btn-sm" data-act="assignEquipment" data-id="${i.id}">Asignar</button>
-        <button class="btn-ghost btn-sm" data-act="toggleEquipment" data-id="${i.id}" data-active="0" title="Ya no se usa">Retirar</button>
+        <button class="btn-ghost btn-sm" data-act="toggleEquipment" data-id="${i.id}" data-active="0">Retirar</button>
       </span></li>`).join('') || '<li class="muted">No hay material activo.</li>'}</ul>
     <div class="row" style="margin-top:1rem">
       <input id="eqNew" placeholder="Nuevo material (p. ej. Conos)" style="flex:1">
@@ -877,7 +911,7 @@ async function adminMaterial(el) {
 actions.assignEquipment = async (el) => {
   const holder = document.getElementById(`eqHolder${el.dataset.id}`).value;
   await api(`/api/admin/equipment/${el.dataset.id}/assign`, { method: 'POST', body: { holder_id: holder ? Number(holder) : null, session_id: S.adminSessionId } });
-  toast('Material asignado'); render();
+  toast(holder ? 'Material asignado' : 'Marcado como guardado en el club'); render();
 };
 actions.toggleEquipment = async (el) => {
   await api(`/api/admin/equipment/${el.dataset.id}`, { method: 'PATCH', body: { active: el.dataset.active === '1' } });
@@ -896,9 +930,9 @@ const AUDIT_FILTERS = [['', 'Todo'], ['session', 'Convocatorias'], ['attendance'
 async function adminActividad(el) {
   const filter = S.auditFilter || '';
   const rows = await api(`/api/admin/audit?limit=300${filter ? `&entity=${encodeURIComponent(filter)}` : ''}`);
-  el.innerHTML = `<div class="card"><div class="row spread"><h2 style="margin:0">Actividad de coordinación</h2>
-    <select data-change="auditFilter" aria-label="Filtrar">${AUDIT_FILTERS.map(([k, l]) => `<option value="${k}" ${k === filter ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
-    <p class="small muted">Cada cambio que hace coordinación queda aquí con su autor, la fecha y la hora.</p>
+  el.innerHTML = `<div class="card"><div class="row spread" style="margin-bottom:.5rem"><h2 style="margin:0">Actividad</h2>
+    <select data-change="auditFilter" aria-label="Filtrar por tipo">${AUDIT_FILTERS.map(([k, l]) => `<option value="${k}" ${k === filter ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+    <p class="small muted">Cada cambio de Coordinación queda aquí con su autor, la fecha y la hora.</p>
     ${activityList(rows)}</div>`;
 }
 actions.auditFilter = (el) => { S.auditFilter = el.value; render(); };
@@ -923,24 +957,30 @@ async function adminAsistencia(el) {
     }
     S.att = { sid: S.adminSessionId, rows };
   }
-  const tone = { late: 'meh', no_show: 'bad', excused: '', attended: '', left_out: '' };
+  const ROLE = { titular: 'Titular', reserva: 'Reserva', otro: 'Añadido a mano' };
+  const CREATES = new Set(['late', 'no_show']);
+  const baseline = new Map(S.att.rows.map((r) => [r.player_id, saved.get(r.player_id) || (r.role === 'reserva' ? 'left_out' : 'attended')]));
+  const changed = S.att.rows.filter((r) => r.status !== baseline.get(r.player_id) || !d.attendance.length).length;
+  const creating = S.att.rows.filter((r) => CREATES.has(r.status));
   el.innerHTML = `<div class="card">
     <div class="row spread"><h2 style="margin:0">Pasar lista</h2>${d.attendance.length ? '<span class="chip ok">Guardada</span>' : '<span class="chip warn">Sin guardar</span>'}</div>
-    <p class="small muted">«Llegó tarde» (después de las 21:50 sin avisar) y «No se presentó» crean la incidencia automáticamente.
-    La asistencia decide las prioridades de la semana que viene.</p>
-    <ul class="list">${S.att.rows.map((r, i) => `<li style="flex-wrap:wrap">
-      <span class="name">${esc(r.name)}<small>${r.role}</small></span>
-      <span class="seg">${Object.entries(rules.attendance_statuses).map(([k, l]) => `<button class="${r.status === k ? `on ${tone[k]}` : ''}" data-act="setAtt" data-i="${i}" data-status="${k}">${l}</button>`).join('')}</span>
-    </li>`).join('')}</ul>
+    <p class="small muted">Todo el mundo empieza como «Asistió»: cambia solo las excepciones. «Llegó tarde» y «No se presentó» crean una incidencia.</p>
+    <div>${S.att.rows.map((r, i) => `<div class="att-row${r.status !== baseline.get(r.player_id) ? ' changed' : ''}${CREATES.has(r.status) ? ' creates' : ''}">
+      <div class="who"><strong>${esc(r.name)}</strong><small>${ROLE[r.role] || r.role}</small></div>
+      <select data-change="setAtt" data-i="${i}" aria-label="Asistencia de ${esc(r.name)}">${Object.entries(rules.attendance_statuses).map(([k, l]) => `<option value="${k}" ${r.status === k ? 'selected' : ''}>${l}${CREATES.has(k) ? ' (incidencia)' : ''}</option>`).join('')}</select>
+    </div>`).join('')}</div>
     <div class="row" style="margin-top:1rem">
-      <select id="attAdd"><option value="">Añadir a alguien que vino…</option>${d.no_van.concat(d.sin_responder.map((p) => ({ player_id: p.id, name: p.name })))
+      <select id="attAdd" aria-label="Añadir a alguien que vino"><option value="">Añadir a alguien que vino…</option>${d.no_van.concat(d.sin_responder.map((p) => ({ player_id: p.id, name: p.name })))
         .filter((p) => !S.att.rows.some((r) => r.player_id === p.player_id)).map((p) => `<option value="${p.player_id}">${esc(p.name)}</option>`).join('')}</select>
       <button class="btn-sm" data-act="attAdd">Añadir</button>
     </div>
-    <div class="row" style="margin-top:1rem"><button class="btn-primary" data-act="saveAtt">Guardar asistencia</button></div>
+    <div class="savebar">
+      <span class="small ${creating.length ? '' : 'muted'}">${creating.length ? `${icon('alert')} Se ${creating.length === 1 ? 'creará 1 incidencia' : `crearán ${creating.length} incidencias`}` : `${plural(S.att.rows.length, 'persona', 'personas')} en la lista`}</span>
+      <button class="btn-primary" data-act="saveAtt">${d.attendance.length && !changed ? 'Guardar de nuevo' : 'Guardar asistencia'}</button>
+    </div>
   </div>`;
 }
-actions.setAtt = (el) => { S.att.rows[Number(el.dataset.i)].status = el.dataset.status; adminAsistencia(document.getElementById('adminBody')); };
+actions.setAtt = (el) => { S.att.rows[Number(el.dataset.i)].status = el.value; adminAsistencia(document.getElementById('adminBody')); };
 actions.attAdd = () => {
   const sel = document.getElementById('attAdd');
   if (!sel.value) return;
@@ -948,6 +988,13 @@ actions.attAdd = () => {
   adminAsistencia(document.getElementById('adminBody'));
 };
 actions.saveAtt = async () => {
+  const STATUS = S.rules?.attendance_statuses || {};
+  const creating = S.att.rows.filter((r) => r.status === 'late' || r.status === 'no_show');
+  if (creating.length && !await confirmDialog({
+    title: creating.length === 1 ? 'Se va a crear 1 incidencia' : `Se van a crear ${creating.length} incidencias`,
+    body: creating.map((r) => `${esc(r.name)}: ${esc((STATUS[r.status] || r.status).toLowerCase())}`).join('<br>'),
+    confirm: 'Guardar asistencia',
+  })) return;
   await api(`/api/admin/sessions/${S.adminSessionId}/attendance`, { method: 'PUT', body: { items: S.att.rows.map(({ player_id, status }) => ({ player_id, status })) } });
   S.att = null; toast('Asistencia guardada'); render();
 };
@@ -993,21 +1040,21 @@ function renderResEditor(el = document.getElementById('adminBody')) {
   el.innerHTML = `
   <div class="card"><div class="row spread"><h2 style="margin:0">Equipos</h2>
     <span class="row">${S.detail?.teams_proposal ? '<button class="btn-sm" data-act="useProposedTeams">Usar equipos propuestos</button>' : ''}
-    <button class="btn-sm" data-act="resAddTeam">+ Equipo</button></span></div>
+    <button class="btn-sm" data-act="resAddTeam">${icon('plus')} Equipo</button></span></div>
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin-top:.75rem">${R.teams.map((t, i) => `
-      <div class="team-card row"><input type="color" value="${esc(t.color)}" data-input="resTeam" data-i="${i}" data-f="color" style="width:44px;padding:2px">
-        <input value="${esc(t.name)}" data-input="resTeam" data-i="${i}" data-f="name" style="flex:1;min-width:0">
-        ${R.teams.length > 2 ? `<button class="btn-sm btn-ghost" data-act="resDelTeam" data-i="${i}">✕</button>` : ''}
+      <div class="team-card row"><input type="color" value="${esc(t.color)}" data-input="resTeam" data-i="${i}" data-f="color" style="width:44px;padding:2px" aria-label="Color de ${esc(t.name)}">
+        <input value="${esc(t.name)}" data-input="resTeam" data-i="${i}" data-f="name" style="flex:1;min-width:0" aria-label="Nombre del equipo">
+        ${R.teams.length > 2 ? `<button class="btn btn-ghost btn-icon" data-act="resDelTeam" data-i="${i}" aria-label="Quitar ${esc(t.name)}">${icon('x')}</button>` : ''}
         <span class="small muted" style="width:100%">${R.players.filter((p) => R.assign[p.id] === i).length} jugadores</span></div>`).join('')}</div></div>
 
-  <div class="card"><div class="row spread"><h2 style="margin:0">Partidos</h2><button class="btn-sm" data-act="resAddMatch">+ Partido</button></div>
+  <div class="card"><div class="row spread"><h2 style="margin:0">Partidos</h2><button class="btn-sm" data-act="resAddMatch">${icon('plus')} Partido</button></div>
     ${R.matches.length ? `<ul class="list">${R.matches.map((m, i) => `<li style="flex-wrap:wrap">
       <select data-change="resMatch" data-i="${i}" data-f="home">${teamOpts(m.home)}</select>
-      <input type="number" min="0" value="${m.home_goals}" data-input="resMatch" data-i="${i}" data-f="home_goals">
+      <input type="number" min="0" value="${m.home_goals}" data-input="resMatch" data-i="${i}" data-f="home_goals" aria-label="Goles local">
       <span>–</span>
-      <input type="number" min="0" value="${m.away_goals}" data-input="resMatch" data-i="${i}" data-f="away_goals">
+      <input type="number" min="0" value="${m.away_goals}" data-input="resMatch" data-i="${i}" data-f="away_goals" aria-label="Goles visitante">
       <select data-change="resMatch" data-i="${i}" data-f="away">${teamOpts(m.away)}</select>
-      <button class="btn-sm btn-ghost" data-act="resDelMatch" data-i="${i}">✕</button></li>`).join('')}</ul>`
+      <button class="btn btn-ghost btn-icon" data-act="resDelMatch" data-i="${i}" aria-label="Quitar partido">${icon('x')}</button></li>`).join('')}</ul>`
       : '<p class="muted small">Añade los partidos jugados (si hacéis triangular, uno por cruce).</p>'}</div>
 
   <div class="card"><h2>Jugadores</h2>
@@ -1107,33 +1154,33 @@ async function adminIncidencias(el) {
       <small>${i.weeks === 2 ? '2 semanas' : '1 semana'} en P3${i.serious ? ' · <b>grave</b>' : ''} · ${i.source === 'auto' ? 'automática al borrarse' : i.source === 'attendance' ? 'desde asistencia' : 'manual'}
         ${i.created_by_name ? ` · registrada por ${esc(i.created_by_name)}` : ''}${i.updated_by_name ? ` · último cambio: ${esc(i.updated_by_name)}, ${esc(fmtDateTime(i.updated_at))}` : ''}</small>
       <select data-change="infType" data-id="${i.id}" aria-label="Tipo de incidencia" style="margin-top:.35rem;max-width:100%">${typeOpts(i.type)}</select>
-      ${i.note ? `<small>📝 ${esc(i.note)}</small>` : ''}</span>
+      ${i.note ? `<small>Nota: ${esc(i.note)}</small>` : ''}</span>
     ${infStatusChip(i.status)}
     <span class="row">
       ${i.status !== 'confirmed' ? `<button class="btn-sm" data-act="infStatus" data-id="${i.id}" data-status="confirmed">Confirmar</button>` : ''}
       ${i.status !== 'justified' ? `<button class="btn-sm" data-act="infStatus" data-id="${i.id}" data-status="justified">Justificada</button>` : ''}
-      <button class="btn-sm btn-ghost" data-act="infNote" data-id="${i.id}" title="Editar nota">📝</button>
-      <button class="btn-sm btn-ghost" data-act="infDelete" data-id="${i.id}" title="Eliminar">🗑</button>
+      <button class="btn btn-ghost btn-icon" data-act="infNote" data-id="${i.id}" aria-label="Editar la nota" title="Editar la nota">${icon('edit')}</button>
+      <button class="btn btn-ghost btn-icon" data-act="infDelete" data-id="${i.id}" aria-label="Eliminar la incidencia" title="Eliminar">${icon('trash')}</button>
     </span></li>`;
   S.infractionsById = new Map(list.map((x) => [x.id, x]));
   el.innerHTML = `
-  ${expelled.length ? `<div class="status-box danger"><strong>Fuera del equipo por 2 faltas graves</strong>${expelled.map((p) => esc(p.name)).join(', ')}.
-    No pueden apuntarse mientras tengan 2 faltas graves confirmadas.</div>` : ''}
-  <div class="card"><h2>Pendientes de revisar (${pending.length})</h2>
+  ${expelled.length ? `<div class="status-box danger">${icon('alert')}<div><strong>Fuera del equipo por dos faltas graves</strong>${expelled.map((p) => esc(p.name)).join(', ')}.
+    No pueden apuntarse mientras tengan dos faltas graves confirmadas.</div></div>` : ''}
+  <div class="card"><h2>Pendientes de revisar · ${pending.length}</h2>
     <p class="small muted">Se crean solas cuando alguien se borra fuera de plazo o sin avisar. Solo cuentan para la prioridad cuando las confirmas.</p>
-    ${pending.length ? `<ul class="list">${pending.map(row).join('')}</ul>` : '<p class="muted">Nada pendiente 👌</p>'}</div>
+    ${pending.length ? `<ul class="list">${pending.map(row).join('')}</ul>` : '<p class="muted">No hay nada pendiente.</p>'}</div>
   <div class="card"><h2>Registrar incidencia</h2>
     <div class="row">
-      <select id="infSession">${sessions.map((s) => `<option value="${s.id}" ${s.id === S.adminSessionId ? 'selected' : ''}>${esc(fmtShort(s.date))}</option>`).join('')}</select>
-      <select id="infPlayer"><option value="">Jugador…</option>${players.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
-      <select id="infType">${Object.entries(rules.infraction_types).map(([k, t]) => `<option value="${k}">${esc(t.label)}</option>`).join('')}</select>
+      <select id="infSession" aria-label="Entreno">${sessions.map((s) => `<option value="${s.id}" ${s.id === S.adminSessionId ? 'selected' : ''}>${esc(fmtShort(s.date))}</option>`).join('')}</select>
+      <select id="infPlayer" aria-label="Jugador"><option value="">Elige a quién…</option>${players.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
+      <select id="infType" aria-label="Tipo de incidencia">${Object.entries(rules.infraction_types).map(([k, t]) => `<option value="${k}">${esc(t.label)}</option>`).join('')}</select>
     </div>
     <div class="row" style="margin-top:.5rem"><input id="infNote" placeholder="Nota (opcional)" style="flex:1"><button class="btn-primary" data-act="infCreate">Registrar</button></div></div>
-  <div class="card"><h2>Historial (${rest.length})</h2>${rest.length ? `<ul class="list">${rest.map(row).join('')}</ul>` : '<p class="muted">Sin incidencias.</p>'}</div>`;
+  <div class="card"><h2>Historial · ${rest.length}</h2>${rest.length ? `<ul class="list">${rest.map(row).join('')}</ul>` : '<p class="muted">Todavía no hay incidencias.</p>'}</div>`;
 }
 actions.infStatus = async (el) => {
   await api(`/api/admin/infractions/${el.dataset.id}`, { method: 'PATCH', body: { status: el.dataset.status } });
-  toast('Actualizada'); render();
+  toast(el.dataset.status === 'justified' ? 'Marcada como justificada' : 'Incidencia confirmada'); render();
 };
 actions.infType = async (el) => {
   await api(`/api/admin/infractions/${el.dataset.id}`, { method: 'PATCH', body: { type: el.value } });
@@ -1141,14 +1188,15 @@ actions.infType = async (el) => {
 };
 actions.infNote = async (el) => {
   const inf = S.infractionsById.get(Number(el.dataset.id));
-  const note = prompt(`Nota de la incidencia de ${inf.name}:`, inf.note || '');
+  const note = await textDialog({ title: `Nota de la incidencia de ${inf.name}`, label: 'Nota (la ve Coordinación)', value: inf.note || '' });
   if (note === null) return;
   await api(`/api/admin/infractions/${el.dataset.id}`, { method: 'PATCH', body: { note } });
   toast('Nota guardada'); render();
 };
 actions.infDelete = async (el) => {
-  if (!confirm('¿Eliminar esta incidencia?')) return;
-  await api(`/api/admin/infractions/${el.dataset.id}`, { method: 'DELETE' }); render();
+  const inf = S.infractionsById.get(Number(el.dataset.id));
+  if (!await confirmDialog({ title: `¿Eliminar la incidencia de ${inf.name}?`, body: 'Deja de contar para la prioridad. Queda registrado en Actividad.', confirm: 'Eliminar', danger: true })) return;
+  await api(`/api/admin/infractions/${el.dataset.id}`, { method: 'DELETE' }); toast('Incidencia eliminada'); render();
 };
 actions.infCreate = async () => {
   const body = {
@@ -1161,31 +1209,31 @@ actions.infCreate = async () => {
 };
 
 // --- Jugadores ---
-const ROLE_LABELS = { coordinador: 'Coordinador/a', gestor: 'Gestor/a', petos: 'Petos', balones: 'Balones' };
+const ROLE_LABELS = { coordinador: 'Coordinación', gestor: 'Gestión', petos: 'Petos', balones: 'Balones' };
 
 async function adminJugadores(el) {
   const players = await api('/api/admin/players');
   S.adminPlayers = players;
   const isCoord = !!(S.me && S.me.player.roles.includes('coordinador'));
-  const roleBoxes = (p) => Object.keys(ROLE_LABELS).map((code) => `
-    <label style="white-space:nowrap"><input type="checkbox" ${p.roles.includes(code) ? 'checked' : ''} ${isCoord ? '' : 'disabled'}
-      data-change="toggleRole" data-id="${p.id}" data-role="${code}"> ${ROLE_LABELS[code]}</label>`).join('');
+  const roleToggles = (p) => Object.keys(ROLE_LABELS).map((code) => `
+    <button type="button" class="toggle" aria-pressed="${p.roles.includes(code)}" ${isCoord ? '' : 'disabled'}
+      data-act="toggleRole" data-id="${p.id}" data-role="${code}">${p.roles.includes(code) ? icon('check') : ''}${ROLE_LABELS[code]}</button>`).join('');
   el.innerHTML = `
-  <div class="card"><h2>Jugadores (${players.filter((p) => p.active).length} activos)</h2>
-    <p class="small muted">Cada persona se registra con su propia cuenta. Aquí se asignan los roles:
-    <strong>coordinador/a</strong> (todo), <strong>gestor/a</strong> (convocatorias, asistencia, resultados e incidencias),
-    <strong>petos</strong> y <strong>balones</strong> (responsables del material).
-    ${isCoord ? '' : '<br>Solo un coordinador puede cambiar los roles.'}</p>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Nombre</th><th>Contacto</th><th>Roles</th><th>Activo</th><th title="Exento del mínimo de asistencia">Exento</th><th class="num">Graves</th></tr></thead>
-      <tbody>${players.map((p) => `<tr class="${p.active ? '' : 'dim'}">
-        <td>${esc(p.name)}<div class="small muted">${p.last_login_at ? 'Último acceso ' + esc(fmtDateTime(p.last_login_at)) : 'Aún no ha entrado'}</div></td>
-        <td class="small">${esc(p.email || '—')}<br>${esc(p.phone || '')}</td>
-        <td><div style="display:flex;flex-direction:column;gap:.25rem">${roleBoxes(p)}</div></td>
-        <td><input type="checkbox" ${p.active ? 'checked' : ''} data-change="playerField" data-id="${p.id}" data-f="active"></td>
-        <td><input type="checkbox" ${p.attendance_exempt ? 'checked' : ''} data-change="playerField" data-id="${p.id}" data-f="attendance_exempt"></td>
-        <td class="num">${p.serious_infractions ? `<span class="chip ${p.expelled ? 'danger' : 'warn'}">${p.serious_infractions}</span>` : '0'}</td>
-      </tr>`).join('')}</tbody></table></div></div>`;
+  <div class="card"><h2>Jugadores · ${players.filter((p) => p.active).length} activos</h2>
+    <p class="small muted">Cada persona crea su cuenta. Aquí se asignan los roles: <strong>Coordinación</strong> (todo), <strong>Gestión</strong>
+    (convocatorias, asistencia, resultados e incidencias) y <strong>Petos</strong> o <strong>Balones</strong> (material).
+    ${isCoord ? '' : 'Solo Coordinación puede cambiar los roles.'}</p>
+    ${players.map((p) => `<div class="player-row${p.active ? '' : ' dim'}">
+      <div><strong>${esc(p.name)}</strong>
+        <div class="contact">${esc(p.email || 'Sin email')}${p.phone ? ` · ${esc(p.phone)}` : ''}</div>
+        <div class="contact">${p.last_login_at ? `Último acceso: ${esc(fmtDateTime(p.last_login_at))}` : 'Aún no ha entrado'}</div></div>
+      <div class="player-controls" role="group" aria-label="Roles de ${esc(p.name)}">${roleToggles(p)}</div>
+      <div class="player-flags">
+        <label><input type="checkbox" ${p.active ? 'checked' : ''} data-change="playerField" data-id="${p.id}" data-f="active"> Activo</label>
+        <label title="No le aplica el mínimo de asistencia"><input type="checkbox" ${p.attendance_exempt ? 'checked' : ''} data-change="playerField" data-id="${p.id}" data-f="attendance_exempt"> Exención</label>
+        ${p.serious_infractions ? `<span class="chip ${p.expelled ? 'danger' : 'warn'}">${plural(p.serious_infractions, 'falta grave', 'faltas graves')}</span>` : ''}
+      </div>
+    </div>`).join('')}</div>`;
 }
 
 // Cambia un rol: se envía el conjunto completo de roles del jugador
@@ -1193,10 +1241,10 @@ actions.toggleRole = async (el) => {
   const pid = Number(el.dataset.id);
   const p = S.adminPlayers.find((x) => x.id === pid);
   const roles = new Set(p.roles);
-  if (el.checked) roles.add(el.dataset.role); else roles.delete(el.dataset.role);
+  if (el.getAttribute('aria-pressed') === 'true') roles.delete(el.dataset.role); else roles.add(el.dataset.role);
   try {
     const r = await api(`/api/admin/players/${pid}/roles`, { method: 'PUT', body: { roles: [...roles] } });
-    p.roles = r.roles; toast('Roles guardados');
+    p.roles = r.roles; toast(`Roles de ${p.name} guardados`);
   } catch (err) { toast(err.message, true); }
   if (S.me && pid === S.me.player.id) S.me = await api('/api/me');
   render();
@@ -1214,7 +1262,7 @@ const FIELD = (label, id, type = 'text', extra = '') =>
   `<label class="field">${label}<input id="${id}" type="${type}" ${extra}></label>`;
 
 async function viewLogin() {
-  $app.innerHTML = `<div class="card" style="max-width:420px;margin:1.5rem auto">
+  $app.innerHTML = `<div class="card" style="max-width:420px;margin:1rem auto">
     <h1>Entrar</h1>
     <form id="loginForm" class="stack">
       ${FIELD('Email', 'loginEmail', 'email', 'autocomplete="email" required')}
@@ -1228,13 +1276,13 @@ async function viewLogin() {
       const r = await api('/api/auth/login', { method: 'POST', body: {
         email: document.getElementById('loginEmail').value, password: document.getElementById('loginPw').value } });
       S.token = r.token; localStorage.setItem('f7_token', r.token); S.me = null;
-      toast(`Hola, ${r.player.name.split(' ')[0]}`); location.hash = '#/';
+      toast(`Hola, ${r.player.name}`); location.hash = '#/';
     } catch (err) { toast(err.message, true); }
   };
 }
 
 async function viewRegister() {
-  $app.innerHTML = `<div class="card" style="max-width:480px;margin:1.5rem auto">
+  $app.innerHTML = `<div class="card" style="max-width:480px;margin:1rem auto">
     <h1>Crear cuenta</h1>
     <p class="small muted">Tus datos solo los ve Coordinación. Con el email y la contraseña entrarás después.</p>
     <form id="regForm" class="stack">
@@ -1264,7 +1312,7 @@ async function viewRegister() {
         password: pw,
       } });
       S.token = r.token; localStorage.setItem('f7_token', r.token); S.me = null;
-      toast('Cuenta creada. ¡Te damos la bienvenida!'); location.hash = '#/';
+      toast('Cuenta creada. Te damos la bienvenida a la sección'); location.hash = '#/';
     } catch (err) { toast(err.message, true); }
   };
 }
@@ -1275,13 +1323,21 @@ function currentTheme() {
   if (set === 'light' || set === 'dark') return set;
   return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
+function paintThemeToggle() {
+  const dark = currentTheme() === 'dark';
+  const btn = document.getElementById('themeToggle');
+  btn.querySelector('use').setAttribute('href', dark ? '#i-sun' : '#i-moon');
+  btn.setAttribute('aria-label', dark ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro');
+}
 document.getElementById('themeToggle').addEventListener('click', () => {
   const next = currentTheme() === 'dark' ? 'light' : 'dark';
   document.documentElement.setAttribute('data-theme', next);
   try { localStorage.setItem('f7_theme', next); } catch (e) { /* sin almacenamiento: solo esta visita */ }
-  document.getElementById('themeToggle').textContent = next === 'dark' ? '☀️' : '🌙';
+  paintThemeToggle();
+  // Los gráficos leen sus colores al pintarse
+  if (location.hash.startsWith('#/clasificacion') && S.dash) renderDashboard();
 });
-document.getElementById('themeToggle').textContent = currentTheme() === 'dark' ? '☀️' : '🌙';
+paintThemeToggle();
 
 // ---------- Inicio ----------
 loadRules().catch(() => {});
