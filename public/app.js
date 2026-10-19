@@ -3,26 +3,13 @@
 // ---------- Estado y utilidades ----------
 
 const S = {
-  player: localStorage.getItem('f7_player') || '',
-  admin: localStorage.getItem('f7_admin') || '',
-  rules: null,
+  token: localStorage.getItem('f7_token') || '',   // sesión de la cuenta (ver /api/auth/*)
+  me: null,                                        // datos de /api/me (jugador, roles)
   adminSessionId: Number(sessionStorage.getItem('f7_admin_session')) || null,
   res: null,       // editor de resultados
   att: null,       // editor de asistencia
   sort: { key: 'points', dir: -1 },
 };
-
-// Enlace personal: /?t=TOKEN
-(function readTokenFromUrl() {
-  const url = new URL(location.href);
-  const t = url.searchParams.get('t');
-  if (t) {
-    S.player = t;
-    localStorage.setItem('f7_player', t);
-    url.searchParams.delete('t');
-    history.replaceState(null, '', url.pathname + (url.hash || '#/'));
-  }
-})();
 
 const $app = document.getElementById('app');
 const $nav = document.getElementById('nav');
@@ -32,12 +19,11 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 
 async function api(path, { method = 'GET', body } = {}) {
   const headers = { 'Content-Type': 'application/json' };
-  if (S.player) headers['X-Player-Token'] = S.player;
-  if (S.admin) headers.Authorization = `Bearer ${S.admin}`;
+  if (S.token) headers.Authorization = `Bearer ${S.token}`;
   const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
   const data = await res.json().catch(() => ({}));
-  if (res.status === 401 && path.startsWith('/api/admin') && S.admin) {
-    S.admin = ''; localStorage.removeItem('f7_admin');
+  if (res.status === 401 && S.token && !path.startsWith('/api/auth/')) {
+    forgetSession();
   }
   if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
   return data;
@@ -93,14 +79,19 @@ const routes = [
   [/^#\/resultados\/(\d+)$/, viewResultsDetail],
   [/^#\/normas$/, viewRules],
   [/^#\/admin(?:\/(\w+))?$/, viewAdmin],
+  [/^#\/entrar$/, viewLogin],
+  [/^#\/registro$/, viewRegister],
+  [/^#\/salir$/, () => actions.logout()],
 ];
 
 function renderNav() {
   const h = location.hash || '#/';
   const items = [];
-  if (S.player) items.push(['#/', 'Convocatoria']);
-  if (S.player || S.admin) items.push(['#/clasificacion', 'Clasificación'], ['#/resultados', 'Resultados']);
-  items.push(['#/normas', 'Normas'], ['#/admin', 'Coordinación']);
+  if (S.token) items.push(['#/', 'Convocatoria'], ['#/clasificacion', 'Clasificación'], ['#/resultados', 'Resultados']);
+  items.push(['#/normas', 'Normas']);
+  if (S.token && canManage()) items.push(['#/admin', 'Coordinación']);
+  if (!S.token) items.push(['#/entrar', 'Entrar'], ['#/registro', 'Crear cuenta']);
+  if (S.token) items.push(['#/salir', 'Salir']);
   $nav.innerHTML = items.map(([href, label]) => {
     const active = href === '#/' ? (h === '#/' || h === '#') : h.startsWith(href);
     return `<a href="${href}" class="${active ? 'active' : ''}">${label}</a>`;
@@ -144,20 +135,23 @@ document.addEventListener('input', (e) => {
 // ---------- Jugador: convocatoria ----------
 
 async function viewHome() {
-  if (!S.player) {
+  if (!S.token) {
     $app.innerHTML = `<div class="card empty">
       <h1>⚽ Convocatorias Fútbol 7</h1>
-      <p>Para apuntarte a los entrenamientos abre el <strong>enlace personal</strong> que te ha enviado Coordinación por WhatsApp.</p>
-      <p class="small">¿Eres de coordinación? <a href="#/admin">Entra aquí</a>.</p></div>`;
+      <p>Apúntate a los entrenamientos desde tu cuenta. Si ya tienes una, entra con tu email y contraseña.</p>
+      <div class="row" style="justify-content:center;margin-top:1rem">
+        <a class="btn btn-primary" href="#/registro">Crear cuenta</a>
+        <a class="btn" href="#/entrar">Entrar</a></div></div>`;
     return;
   }
   let me;
   try { me = await api('/api/me'); }
   catch (e) {
-    $app.innerHTML = `<div class="card empty"><h2>Enlace no válido</h2><p>${esc(e.message)}. Pide a Coordinación un enlace nuevo.</p>
-      <button data-act="forgetPlayer">Olvidar este enlace</button></div>`;
+    $app.innerHTML = `<div class="card empty"><h2>Tu sesión ha caducado</h2><p>Vuelve a entrar para seguir.</p>
+      <a class="btn btn-primary" href="#/entrar">Entrar</a></div>`;
     return;
   }
+  S.me = me;
   const s = me.session;
   let html = `<div class="row spread" style="margin-bottom:.75rem"><h1 style="margin:0">Hola, ${esc(me.player.name.split(' ')[0])} 👋</h1></div>`;
 
@@ -188,7 +182,7 @@ async function viewHome() {
 
     const canYes = sess.is_open && !mine && !me.expelled;
     const canNo = !sess.has_started && !sess.cancelled && s.my_response !== 'no';
-    html += `<div class="card">
+    html += `<div class="card featured">
       <div class="row spread">
         <div>
           <div class="hero-date">${esc(fmtDate(sess.date))} · ${esc(sess.start_time)}</div>
@@ -243,7 +237,16 @@ function infStatusChip(status) {
       : '<span class="chip danger">Confirmada</span>';
 }
 
-actions.forgetPlayer = () => { localStorage.removeItem('f7_player'); S.player = ''; render(); };
+// Cierra la sesión en este navegador (y en el servidor si se puede)
+function forgetSession() {
+  S.token = ''; S.me = null;
+  try { localStorage.removeItem('f7_token'); } catch (e) { /* sin almacenamiento */ }
+}
+function canManage() { return !!(S.me && S.me.player && S.me.player.can_manage); }
+actions.logout = async () => {
+  try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) { /* ya cerrada */ }
+  forgetSession(); toast('Sesión cerrada'); location.hash = '#/';
+};
 
 actions.answerYes = async (el) => {
   el.disabled = true;
@@ -296,7 +299,7 @@ actions.answerNo = async (el) => {
 // ---------- Clasificación ----------
 
 async function viewStats() {
-  if (!S.player && !S.admin) return viewHome();
+  if (!S.token) return viewHome();
   const data = await api('/api/stats');
   S.statsData = data;
   renderStats();
@@ -309,7 +312,7 @@ function renderStats() {
     ['played', 'PJ', true], ['wins', 'G', true], ['draws', 'E', true], ['losses', 'P', true], ['points', 'Pts', true],
     ['goals', 'Goles', true], ['assists', 'Asist. gol', true], ['mvps', 'MVP', true], ['saves', 'Paradas', true],
   ];
-  if (S.admin) cols.push(['infractions', 'Incid.', true]);
+  if (canManage()) cols.push(['infractions', 'Incid.', true]);
   const { key, dir } = S.sort;
   const rows = [...data.players].sort((a, b) => {
     const va = a[key], vb = b[key];
@@ -349,7 +352,7 @@ actions.sortStats = (el) => {
 // ---------- Resultados ----------
 
 async function viewResultsList() {
-  if (!S.player && !S.admin) return viewHome();
+  if (!S.token) return viewHome();
   const sessions = (await api('/api/sessions')).filter((s) => s.has_results);
   $app.innerHTML = `<h1>Resultados</h1>${sessions.length ? `<div class="card"><ul class="list">${sessions.map((s) => `
     <li><span class="name"><a href="#/resultados/${s.id}">${esc(fmtDate(s.date))}</a></span><span class="chip">${s.yes_count} apuntados</span></li>`).join('')}
@@ -423,18 +426,12 @@ const ADMIN_TABS = [
 ];
 
 async function viewAdmin(tab = 'convocatoria') {
-  if (!S.admin) {
-    $app.innerHTML = `<div class="card" style="max-width:420px;margin:2rem auto">
-      <h1>Coordinación</h1><form id="loginForm" class="stack">
-      <label class="field">Contraseña<input type="password" id="pw" autocomplete="current-password" required></label>
-      <button class="btn-primary" type="submit">Entrar</button></form></div>`;
-    document.getElementById('loginForm').onsubmit = async (e) => {
-      e.preventDefault();
-      try {
-        const r = await api('/api/admin/login', { method: 'POST', body: { password: document.getElementById('pw').value } });
-        S.admin = r.token; localStorage.setItem('f7_admin', r.token); render();
-      } catch (err) { toast(err.message, true); }
-    };
+  if (!S.token) return viewLogin();
+  if (!S.me) { try { S.me = await api('/api/me'); } catch (e) { return viewLogin(); } }
+  if (!canManage()) {
+    $app.innerHTML = `<div class="card empty"><h2>Sección de coordinación</h2>
+      <p>Solo para cuentas con rol de <strong>coordinador/a</strong> o <strong>gestor/a</strong>.</p>
+      <a class="btn" href="#/">Volver</a></div>`;
     return;
   }
   if (tab === 'clasificacion') {
@@ -467,7 +464,6 @@ function sessionPicker(ov, tab) {
     <button class="btn-primary btn-sm" data-act="newSession">+ Nuevo entrenamiento</button></div>`;
 }
 
-actions.logout = () => { S.admin = ''; localStorage.removeItem('f7_admin'); render(); };
 actions.pickSession = (el) => {
   S.adminSessionId = Number(el.value); sessionStorage.setItem('f7_admin_session', el.value);
   S.res = null; S.att = null; render();
@@ -802,35 +798,45 @@ actions.infCreate = async () => {
 };
 
 // --- Jugadores ---
+const ROLE_LABELS = { coordinador: 'Coordinador/a', gestor: 'Gestor/a', petos: 'Petos', balones: 'Balones' };
+
 async function adminJugadores(el) {
   const players = await api('/api/admin/players');
-  const link = (p) => `${location.origin}/?t=${p.token}`;
-  S.playerLinks = new Map(players.map((p) => [p.id, { name: p.name, link: link(p) }]));
+  S.adminPlayers = players;
+  const isCoord = !!(S.me && S.me.player.roles.includes('coordinador'));
+  const roleBoxes = (p) => Object.keys(ROLE_LABELS).map((code) => `
+    <label style="white-space:nowrap"><input type="checkbox" ${p.roles.includes(code) ? 'checked' : ''} ${isCoord ? '' : 'disabled'}
+      data-change="toggleRole" data-id="${p.id}" data-role="${code}"> ${ROLE_LABELS[code]}</label>`).join('');
   el.innerHTML = `
-  <div class="card"><h2>Añadir jugadores</h2>
-    <textarea id="newNames" placeholder="Un nombre por línea"></textarea>
-    <div class="row" style="margin-top:.5rem"><label><input type="checkbox" id="newCoord"> Son coordinadores</label>
-    <button class="btn-primary" data-act="addPlayers">Añadir</button></div></div>
-  <div class="card"><div class="row spread"><h2 style="margin:0">Jugadores (${players.filter((p) => p.active).length} activos)</h2>
-    <button class="btn-sm" data-act="copyAllLinks">Copiar todos los enlaces</button></div>
-    <p class="small muted">Cada persona tiene un enlace personal para confirmar asistencia. Envíaselo por privado.</p>
+  <div class="card"><h2>Jugadores (${players.filter((p) => p.active).length} activos)</h2>
+    <p class="small muted">Cada persona se registra con su propia cuenta. Aquí se asignan los roles:
+    <strong>coordinador/a</strong> (todo), <strong>gestor/a</strong> (convocatorias, asistencia, resultados e incidencias),
+    <strong>petos</strong> y <strong>balones</strong> (responsables del material).
+    ${isCoord ? '' : '<br>Solo un coordinador puede cambiar los roles.'}</p>
     <div class="table-wrap"><table>
-      <thead><tr><th>Nombre</th><th>Enlace</th><th>Coord.</th><th>Activo</th><th title="Exento del mínimo de asistencia (lesión, fuera…)">Exento</th><th class="num">Graves</th><th></th></tr></thead>
+      <thead><tr><th>Nombre</th><th>Contacto</th><th>Roles</th><th>Activo</th><th title="Exento del mínimo de asistencia">Exento</th><th class="num">Graves</th></tr></thead>
       <tbody>${players.map((p) => `<tr class="${p.active ? '' : 'dim'}">
-        <td><input value="${esc(p.name)}" data-change="playerField" data-id="${p.id}" data-f="name" style="min-width:140px"></td>
-        <td><button class="btn-sm" data-act="copyLink" data-id="${p.id}">Copiar enlace</button></td>
-        <td><input type="checkbox" ${p.is_coordinator ? 'checked' : ''} data-change="playerField" data-id="${p.id}" data-f="is_coordinator"></td>
+        <td>${esc(p.name)}<div class="small muted">${p.last_login_at ? 'Último acceso ' + esc(fmtDateTime(p.last_login_at)) : 'Aún no ha entrado'}</div></td>
+        <td class="small">${esc(p.email || '—')}<br>${esc(p.phone || '')}</td>
+        <td><div style="display:flex;flex-direction:column;gap:.25rem">${roleBoxes(p)}</div></td>
         <td><input type="checkbox" ${p.active ? 'checked' : ''} data-change="playerField" data-id="${p.id}" data-f="active"></td>
         <td><input type="checkbox" ${p.attendance_exempt ? 'checked' : ''} data-change="playerField" data-id="${p.id}" data-f="attendance_exempt"></td>
         <td class="num">${p.serious_infractions ? `<span class="chip ${p.expelled ? 'danger' : 'warn'}">${p.serious_infractions}</span>` : '0'}</td>
-        <td><button class="btn-sm btn-ghost" data-act="regenToken" data-id="${p.id}" title="Invalida el enlace anterior">Nuevo enlace</button></td>
       </tr>`).join('')}</tbody></table></div></div>`;
 }
-actions.addPlayers = async () => {
-  const names = document.getElementById('newNames').value.split('\n').map((s) => s.trim()).filter(Boolean);
-  if (!names.length) return;
-  const r = await api('/api/admin/players', { method: 'POST', body: { names, is_coordinator: document.getElementById('newCoord').checked } });
-  toast(`${r.created} añadidos`); render();
+
+// Cambia un rol: se envía el conjunto completo de roles del jugador
+actions.toggleRole = async (el) => {
+  const pid = Number(el.dataset.id);
+  const p = S.adminPlayers.find((x) => x.id === pid);
+  const roles = new Set(p.roles);
+  if (el.checked) roles.add(el.dataset.role); else roles.delete(el.dataset.role);
+  try {
+    const r = await api(`/api/admin/players/${pid}/roles`, { method: 'PUT', body: { roles: [...roles] } });
+    p.roles = r.roles; toast('Roles guardados');
+  } catch (err) { toast(err.message, true); }
+  if (S.me && pid === S.me.player.id) S.me = await api('/api/me');
+  render();
 };
 actions.playerField = async (el) => {
   const v = el.type === 'checkbox' ? el.checked : el.value;
@@ -838,16 +844,85 @@ actions.playerField = async (el) => {
   toast('Guardado');
   if (el.type === 'checkbox') render();
 };
-actions.copyLink = (el) => {
-  const p = S.playerLinks.get(Number(el.dataset.id));
-  copyText(`Hola ${p.name.split(' ')[0]}! Este es tu enlace personal para confirmar asistencia a los entrenos de Fútbol 7: ${p.link}`);
-};
-actions.copyAllLinks = () => copyText([...S.playerLinks.values()].map((p) => `${p.name}: ${p.link}`).join('\n'));
-actions.regenToken = async (el) => {
-  if (!confirm('El enlace anterior dejará de funcionar. ¿Continuar?')) return;
-  await api(`/api/admin/players/${el.dataset.id}/token`, { method: 'POST' }); render();
-};
+
+// ---------- Cuentas: entrar y registrarse ----------
+
+const FIELD = (label, id, type = 'text', extra = '') =>
+  `<label class="field">${label}<input id="${id}" type="${type}" ${extra}></label>`;
+
+async function viewLogin() {
+  $app.innerHTML = `<div class="card" style="max-width:420px;margin:1.5rem auto">
+    <h1>Entrar</h1>
+    <form id="loginForm" class="stack">
+      ${FIELD('Email', 'loginEmail', 'email', 'autocomplete="email" required')}
+      ${FIELD('Contraseña', 'loginPw', 'password', 'autocomplete="current-password" required')}
+      <button class="btn-primary" type="submit">Entrar</button>
+    </form>
+    <p class="small muted" style="margin-top:1rem">¿Aún no tienes cuenta? <a href="#/registro">Regístrate</a></p></div>`;
+  document.getElementById('loginForm').onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      const r = await api('/api/auth/login', { method: 'POST', body: {
+        email: document.getElementById('loginEmail').value, password: document.getElementById('loginPw').value } });
+      S.token = r.token; localStorage.setItem('f7_token', r.token); S.me = null;
+      toast(`Hola, ${r.player.name.split(' ')[0]}`); location.hash = '#/';
+    } catch (err) { toast(err.message, true); }
+  };
+}
+
+async function viewRegister() {
+  $app.innerHTML = `<div class="card" style="max-width:480px;margin:1.5rem auto">
+    <h1>Crear cuenta</h1>
+    <p class="small muted">Tus datos solo los ve Coordinación. Con el email y la contraseña entrarás después.</p>
+    <form id="regForm" class="stack">
+      <div class="grid grid-2" style="gap:.75rem">
+        ${FIELD('Nombre', 'regFirst', 'text', 'autocomplete="given-name" required')}
+        ${FIELD('Apellidos', 'regLast', 'text', 'autocomplete="family-name" required')}
+      </div>
+      ${FIELD('Teléfono', 'regPhone', 'tel', 'autocomplete="tel" placeholder="600 000 000" required')}
+      ${FIELD('Email', 'regEmail', 'email', 'autocomplete="email" required')}
+      <div class="grid grid-2" style="gap:.75rem">
+        ${FIELD('Contraseña (mín. 8)', 'regPw', 'password', 'autocomplete="new-password" minlength="8" required')}
+        ${FIELD('Repite la contraseña', 'regPw2', 'password', 'autocomplete="new-password" minlength="8" required')}
+      </div>
+      <button class="btn-primary" type="submit">Crear cuenta</button>
+    </form>
+    <p class="small muted" style="margin-top:1rem">¿Ya tienes cuenta? <a href="#/entrar">Entrar</a></p></div>`;
+  document.getElementById('regForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const pw = document.getElementById('regPw').value;
+    if (pw !== document.getElementById('regPw2').value) return toast('Las contraseñas no coinciden', true);
+    try {
+      const r = await api('/api/auth/register', { method: 'POST', body: {
+        first_name: document.getElementById('regFirst').value,
+        last_name: document.getElementById('regLast').value,
+        phone: document.getElementById('regPhone').value,
+        email: document.getElementById('regEmail').value,
+        password: pw,
+      } });
+      S.token = r.token; localStorage.setItem('f7_token', r.token); S.me = null;
+      toast('Cuenta creada. ¡Te damos la bienvenida!'); location.hash = '#/';
+    } catch (err) { toast(err.message, true); }
+  };
+}
+
+// ---------- Modo claro / oscuro ----------
+function currentTheme() {
+  const set = document.documentElement.getAttribute('data-theme');
+  if (set === 'light' || set === 'dark') return set;
+  return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+document.getElementById('themeToggle').addEventListener('click', () => {
+  const next = currentTheme() === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  try { localStorage.setItem('f7_theme', next); } catch (e) { /* sin almacenamiento: solo esta visita */ }
+  document.getElementById('themeToggle').textContent = next === 'dark' ? '☀️' : '🌙';
+});
+document.getElementById('themeToggle').textContent = currentTheme() === 'dark' ? '☀️' : '🌙';
 
 // ---------- Inicio ----------
 loadRules().catch(() => {});
-render();
+(async () => {
+  if (S.token) { try { S.me = await api('/api/me'); } catch (e) { /* sesión caducada: api() la cierra */ } }
+  render();
+})();

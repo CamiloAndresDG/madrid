@@ -14,5 +14,5 @@ services:
         value: 22.15.0
       - key: DATABASE_URL
         sync: false  # cadena del "Session pooler" de Supabase; se pone en el panel de Render
-      - key: ADMIN_PASSWORD
-        sync: false  # contraseña de coordinación; se pone en el panel de Render
+      - key: COORDINATOR_EMAIL
+        sync: false  # email que obtiene el rol de coordinador al registrarse (el primer coordinador)

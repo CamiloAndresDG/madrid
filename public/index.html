@@ -9,12 +9,22 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Unbounded:wght@700;800;900&display=swap" rel="stylesheet">
+  <script>
+    // Modo claro/oscuro: se aplica antes de pintar para evitar parpadeos
+    (function () {
+      try {
+        var t = localStorage.getItem('f7_theme');
+        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    })();
+  </script>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <header class="topbar">
-    <a href="#/" class="brand"><span class="ball">⚽</span><span>Fútbol 7 <small>Gmadrid · 26/27</small></span></a>
+    <a href="#/" class="brand"><span class="ball">⚽</span><span class="rainbow-text">Fútbol 7</span> <small>Gmadrid · 26/27</small></a>
     <nav id="nav" class="nav"></nav>
+    <button id="themeToggle" class="theme-toggle" type="button" aria-label="Cambiar entre modo claro y oscuro" title="Modo claro / oscuro">🌙</button>
   </header>
   <main id="app" class="container"><p class="muted">Cargando…</p></main>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>

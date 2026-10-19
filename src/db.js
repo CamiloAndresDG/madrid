@@ -18,14 +18,50 @@ const NOW = `to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS players (
   id SERIAL PRIMARY KEY,
-  name TEXT NOT NULL,
-  is_coordinator INTEGER NOT NULL DEFAULT 0,
-  active INTEGER NOT NULL DEFAULT 1,
-  attendance_exempt INTEGER NOT NULL DEFAULT 0,  -- lesión, temporada fuera... (no aplica el mínimo de 4)
+  name TEXT NOT NULL,                        -- nombre completo (first_name + last_name)
+  first_name TEXT,
+  last_name TEXT,
+  phone TEXT,
+  email TEXT,
+  password_hash TEXT,
+  last_login_at TEXT,
+  active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+  attendance_exempt INTEGER NOT NULL DEFAULT 0 CHECK (attendance_exempt IN (0,1)),  -- lesión, temporada fuera...
   exempt_note TEXT,
-  token TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL DEFAULT ${NOW}
+  created_at TEXT NOT NULL DEFAULT ${NOW},
+  CONSTRAINT players_email_chk CHECK (email IS NULL OR (position('@' in email) > 1 AND email = lower(email)))
 );
+CREATE UNIQUE INDEX IF NOT EXISTS players_email_key ON players (email) WHERE email IS NOT NULL;
+
+-- Roles: el catálogo es fijo; un jugador puede tener varios (coordinador, gestor, petos, balones...)
+CREATE TABLE IF NOT EXISTS roles (
+  code TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  description TEXT NOT NULL
+);
+INSERT INTO roles (code, label, description) VALUES
+  ('coordinador', 'Coordinador/a', 'Acceso completo: gestiona jugadores, roles, convocatorias, resultados e incidencias'),
+  ('gestor', 'Gestor/a', 'Gestiona convocatorias, asistencia, resultados e incidencias'),
+  ('petos', 'Petos', 'Responsable de los petos del entrenamiento'),
+  ('balones', 'Balones', 'Responsable de los balones del entrenamiento')
+ON CONFLICT (code) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS player_roles (
+  player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  role_code TEXT NOT NULL REFERENCES roles(code) ON DELETE CASCADE,
+  granted_at TEXT NOT NULL DEFAULT ${NOW},
+  PRIMARY KEY (player_id, role_code)
+);
+CREATE INDEX IF NOT EXISTS idx_player_roles_role ON player_roles(role_code);
+
+-- Sesiones de inicio de sesión: solo se guarda el hash del token
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  token_hash TEXT PRIMARY KEY,
+  player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_player ON auth_sessions(player_id);
 
 CREATE TABLE IF NOT EXISTS sessions (
   id SERIAL PRIMARY KEY,
@@ -106,7 +142,7 @@ CREATE TABLE IF NOT EXISTS player_stats (
 );
 `;
 
-const TABLES = ['players', 'sessions', 'responses', 'attendance', 'infractions', 'teams', 'team_players', 'matches', 'player_stats'];
+const TABLES = ['players', 'roles', 'player_roles', 'auth_sessions', 'sessions', 'responses', 'attendance', 'infractions', 'teams', 'team_players', 'matches', 'player_stats'];
 
 // Supabase expone las tablas de "public" por su API REST: activar RLS sin políticas
 // las cierra a esa API; el servidor entra como propietario de las tablas y no le afecta.

@@ -84,7 +84,9 @@ const q = {
   session: (id) => db.get('SELECT * FROM sessions WHERE id = $1', [id]),
   prevSession: (date) => db.get('SELECT * FROM sessions WHERE date < $1 AND cancelled = 0 ORDER BY date DESC LIMIT 1', [date]),
   yesResponses: (sid) => db.all(`
-    SELECT r.*, p.name, p.is_coordinator FROM responses r JOIN players p ON p.id = r.player_id
+    SELECT r.*, p.name,
+      EXISTS (SELECT 1 FROM player_roles pr WHERE pr.player_id = p.id AND pr.role_code = 'coordinador') AS is_coordinator
+    FROM responses r JOIN players p ON p.id = r.player_id
     WHERE r.session_id = $1 AND r.answer = 'yes'`, [sid]),
   attendance: (sid) => db.all('SELECT player_id, status FROM attendance WHERE session_id = $1', [sid]),
   infractionsIn: (sid) => db.all(`SELECT * FROM infractions WHERE session_id = $1 AND status = 'confirmed'`, [sid]),

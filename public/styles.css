@@ -202,3 +202,37 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
 
 .empty { text-align: center; padding: 2rem 1rem; color: var(--muted); }
 .rules li { margin-bottom: .4rem; }
+
+/* ---------- Identidad: arcoíris y modo claro/oscuro ---------- */
+:root {
+  --grad-rainbow: linear-gradient(100deg, #E5197E, #C98A00 38%, #0F7D5B 68%, #0E7C9E);
+  --grad-soft: linear-gradient(135deg, rgba(229,25,126,.14), rgba(201,138,0,.10) 35%, rgba(15,125,91,.10) 65%, rgba(14,124,158,.14));
+  --cat-deportes: #1E5FD0;
+  --cat-artes: #C2410C;
+  --cat-bienestar: #0C7A5E;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --grad-rainbow: linear-gradient(100deg, #F0479A, #F0B04A 38%, #3CC59A 68%, #6AA8EC);
+    --grad-soft: linear-gradient(135deg, rgba(240,71,154,.20), rgba(240,176,74,.12) 35%, rgba(60,197,154,.12) 65%, rgba(106,168,236,.18));
+  }
+}
+:root[data-theme="dark"] {
+  --grad-rainbow: linear-gradient(100deg, #F0479A, #F0B04A 38%, #3CC59A 68%, #6AA8EC);
+  --grad-soft: linear-gradient(135deg, rgba(240,71,154,.20), rgba(240,176,74,.12) 35%, rgba(60,197,154,.12) 65%, rgba(106,168,236,.18));
+}
+.rainbow-text {
+  background: var(--grad-rainbow);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.card.featured { background: var(--grad-soft), var(--surface); }
+.theme-toggle {
+  min-height: 36px; width: 36px; padding: 0; border-radius: 999px; border: 1px solid rgba(255,255,255,.2);
+  background: transparent; color: #fff; font-size: 1rem; line-height: 1;
+}
+.theme-toggle:hover { background: rgba(255,255,255,.12); }
+.topbar .nav { margin-left: auto; }
+@media (max-width: 640px) {
+  .topbar .theme-toggle { margin-left: auto; }
+  .topbar .nav { order: 3; flex-basis: 100%; margin-left: 0; }
+}

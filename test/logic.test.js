@@ -10,7 +10,11 @@ let pg, db, pool, L;
 let A, B, C, D, K, s1, s2, s3;
 
 let n = 0;
-const player = async (name, coord = 0) => (await db.get('INSERT INTO players (name, is_coordinator, token) VALUES ($1, $2, $3) RETURNING id', [name, coord, `t${++n}`])).id;
+const player = async (name, coord = 0) => {
+  const { id } = await db.get('INSERT INTO players (name, email) VALUES ($1, $2) RETURNING id', [name, `p${++n}@test.local`]);
+  if (coord) await db.run(`INSERT INTO player_roles (player_id, role_code) VALUES ($1, 'coordinador')`, [id]);
+  return id;
+};
 const session = async (date, capacity = 3) => (await db.get('INSERT INTO sessions (date, capacity) VALUES ($1, $2) RETURNING id', [date, capacity])).id;
 const yes = (sid, pid, t) => db.run(`INSERT INTO responses (session_id, player_id, answer, signed_up_at, updated_at) VALUES ($1, $2, 'yes', $3, $3)`, [sid, pid, t]);
 const attend = (sid, pid, status = 'attended') => db.run('INSERT INTO attendance (session_id, player_id, status) VALUES ($1, $2, $3)', [sid, pid, status]);

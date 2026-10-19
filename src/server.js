@@ -3,13 +3,9 @@ const crypto = require('node:crypto');
 const express = require('express');
 const { db, tx, init } = require('./db');
 const L = require('./logic');
+const A = require('./auth');
 
 const PORT = process.env.PORT || 3000;
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'cambiame';
-if (!process.env.ADMIN_PASSWORD) {
-  console.warn('⚠️  ADMIN_PASSWORD no definido: usando "cambiame". Defínelo antes de publicar la web.');
-}
-const ADMIN_TOKEN = crypto.createHash('sha256').update(`f7-admin:${ADMIN_PASSWORD}`).digest('hex');
 
 const app = express();
 app.use(express.json());
@@ -18,7 +14,6 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 // ---------- Utilidades ----------
 
 const nowIso = () => new Date().toISOString();
-const newToken = () => crypto.randomBytes(12).toString('base64url');
 
 class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -31,29 +26,30 @@ const wrap = (fn) => (req, res, next) => {
 };
 const mw = (fn) => (req, res, next) => { Promise.resolve(fn(req, res)).then(() => next(), next); };
 
-function isAdmin(req) {
+// Token de sesión en la cabecera Authorization: "Bearer <token>"
+function bearer(req) {
   const h = req.get('authorization') || '';
-  const tok = h.startsWith('Bearer ') ? h.slice(7) : '';
-  return tok.length === ADMIN_TOKEN.length &&
-    crypto.timingSafeEqual(Buffer.from(tok), Buffer.from(ADMIN_TOKEN));
+  return h.startsWith('Bearer ') ? h.slice(7) : '';
 }
-async function playerFromReq(req) {
-  const tok = req.get('x-player-token');
-  if (!tok) return null;
-  return (await db.get('SELECT * FROM players WHERE token = $1', [tok])) || null;
-}
-const requireAdmin = mw((req) => {
-  if (!isAdmin(req)) throw new HttpError(401, 'Acceso solo para coordinación');
-});
-const requireAny = mw(async (req) => {
-  req.player = await playerFromReq(req);
-  req.admin = isAdmin(req);
-  if (!req.player && !req.admin) throw new HttpError(401, 'Necesitas tu enlace personal');
-});
+
+// Cualquier jugador con sesión iniciada (req.player, req.roles)
 const requirePlayer = mw(async (req) => {
-  req.player = await playerFromReq(req);
-  if (!req.player) throw new HttpError(401, 'Enlace personal no válido');
+  req.player = await A.sessionPlayer(bearer(req));
+  if (!req.player) throw new HttpError(401, 'Inicia sesión para continuar');
+  req.roles = req.player.roles;
 });
+
+// Jugador con sesión y al menos uno de los roles indicados (el coordinador siempre entra)
+const requireRole = (...allowed) => mw(async (req) => {
+  req.player = await A.sessionPlayer(bearer(req));
+  if (!req.player) throw new HttpError(401, 'Inicia sesión para continuar');
+  req.roles = req.player.roles;
+  const ok = req.roles.includes('coordinador') || req.roles.some((r) => allowed.includes(r));
+  if (!ok) throw new HttpError(403, 'Tu cuenta no tiene permiso para esta sección');
+});
+
+// Lectura compartida: jugadores y coordinación (req.admin = puede gestionar)
+const requireAny = requirePlayer;
 
 async function sessionOr404(id) {
   const s = Number.isInteger(Number(id)) ? await L.getSession(Number(id)) : null;
@@ -160,7 +156,11 @@ app.get('/api/me', requirePlayer, wrap(async (req) => {
   const infractions = await db.all(`SELECT i.id, i.type, i.status, i.note, s.date FROM infractions i JOIN sessions s ON s.id = i.session_id
     WHERE i.player_id = $1 ORDER BY s.date DESC`, [p.id]);
   const out = {
-    player: { id: p.id, name: p.name, is_coordinator: !!p.is_coordinator, active: !!p.active },
+    player: {
+      id: p.id, name: p.name, email: p.email, phone: p.phone,
+      active: !!p.active, roles: req.roles, is_coordinator: req.roles.includes('coordinador'),
+      can_manage: A.canManage(req.roles),
+    },
     expelled: (counts.get(p.id) || 0) >= L.SERIOUS_LIMIT,
     serious_infractions: counts.get(p.id) || 0,
     infractions: infractions.map((i) => ({ ...i, label: L.INFRACTION_TYPES[i.type]?.label || i.type, weeks: L.INFRACTION_TYPES[i.type]?.weeks })),
@@ -239,23 +239,41 @@ app.get('/api/sessions/:id/results', requireAny, wrap(async (req) => {
 
 app.get('/api/stats', requireAny, wrap(async (req) => ({
   min_per_quarter: L.MIN_ATTENDANCE_PER_QUARTER,
-  players: (await L.seasonStats()).filter((p) => p.active || req.admin),
+  players: (await L.seasonStats()).filter((p) => p.active || A.canManage(req.roles)),
 })));
 
 app.get('/api/rules', wrap(() => ({ infraction_types: L.INFRACTION_TYPES, attendance_statuses: L.ATTENDANCE_STATUSES })));
 
-// ---------- API: coordinación ----------
+// ---------- API: cuentas ----------
 
-app.post('/api/admin/login', wrap((req) => {
-  const pw = String(req.body?.password || '');
-  const a = crypto.createHash('sha256').update(pw).digest();
-  const b = crypto.createHash('sha256').update(ADMIN_PASSWORD).digest();
-  if (!crypto.timingSafeEqual(a, b)) throw new HttpError(401, 'Contraseña incorrecta');
-  return { token: ADMIN_TOKEN };
+const sessionReply = async (playerId) => {
+  const { token, expires_at } = await A.createSession(playerId);
+  const me = await A.sessionPlayer(token);
+  return { token, expires_at, player: { id: me.id, name: me.name, roles: me.roles } };
+};
+
+app.post('/api/auth/register', wrap(async (req) => {
+  const id = await A.register(req.body || {});
+  return sessionReply(id);
 }));
 
+app.post('/api/auth/login', wrap(async (req) => {
+  const id = await A.login(req.body?.email, req.body?.password);
+  return sessionReply(id);
+}));
+
+app.post('/api/auth/logout', wrap(async (req) => {
+  await A.deleteSession(bearer(req));
+  return { ok: true };
+}));
+
+app.get('/api/roles', wrap(async () => db.all('SELECT code, label, description FROM roles ORDER BY code')));
+
+// ---------- API: coordinación ----------
+
 const admin = express.Router();
-admin.use(requireAdmin);
+// Coordinadores y gestores: convocatorias, asistencia, resultados e incidencias
+admin.use(requireRole('gestor'));
 
 admin.get('/overview', wrap(async () => {
   const sessions = await Promise.all((await db.all('SELECT * FROM sessions ORDER BY date DESC')).map(sessionFlags));
@@ -268,26 +286,20 @@ admin.get('/overview', wrap(async () => {
   };
 }));
 
-// Jugadores
+// Jugadores (las cuentas las crean los propios jugadores al registrarse)
 admin.get('/players', wrap(async () => {
   const counts = await L.seriousCounts();
-  return (await db.all('SELECT * FROM players ORDER BY active DESC, name')).map((p) => ({
+  const rows = await db.all(`SELECT p.id, p.name, p.first_name, p.last_name, p.email, p.phone, p.active,
+      p.attendance_exempt, p.exempt_note, p.last_login_at,
+      COALESCE(array_agg(pr.role_code ORDER BY pr.role_code) FILTER (WHERE pr.role_code IS NOT NULL), '{}') AS roles
+    FROM players p LEFT JOIN player_roles pr ON pr.player_id = p.id
+    GROUP BY p.id ORDER BY p.active DESC, p.name`);
+  return rows.map((p) => ({
     ...p, serious_infractions: counts.get(p.id) || 0, expelled: (counts.get(p.id) || 0) >= L.SERIOUS_LIMIT,
   }));
 }));
-admin.post('/players', wrap(async (req) => {
-  const names = (Array.isArray(req.body.names) ? req.body.names : [req.body.name])
-    .map((n) => String(n || '').trim()).filter(Boolean);
-  if (!names.length) throw new HttpError(400, 'Falta el nombre');
-  await tx(async (c) => {
-    for (const n of names) {
-      await c.run('INSERT INTO players (name, is_coordinator, token) VALUES ($1, $2, $3)', [n, req.body.is_coordinator ? 1 : 0, newToken()]);
-    }
-  });
-  return { ok: true, created: names.length };
-}));
 admin.patch('/players/:id', wrap(async (req) => {
-  for (const f of ['name', 'is_coordinator', 'active', 'attendance_exempt', 'exempt_note']) {
+  for (const f of ['active', 'attendance_exempt', 'exempt_note']) {
     if (f in req.body) {
       let v = req.body[f];
       if (typeof v === 'boolean') v = v ? 1 : 0;
@@ -296,9 +308,11 @@ admin.patch('/players/:id', wrap(async (req) => {
   }
   return { ok: true };
 }));
-admin.post('/players/:id/token', wrap(async (req) => {
-  await db.run('UPDATE players SET token = $1 WHERE id = $2', [newToken(), Number(req.params.id)]);
-  return { ok: true };
+// Solo coordinación cambia los roles (coordinador, gestor, petos, balones…)
+admin.put('/players/:id/roles', requireRole(), wrap(async (req) => {
+  const roles = Array.isArray(req.body?.roles) ? req.body.roles : [];
+  await A.setRoles(Number(req.params.id), roles);
+  return { ok: true, roles: await A.rolesOf(Number(req.params.id)) };
 }));
 
 // Entrenamientos
