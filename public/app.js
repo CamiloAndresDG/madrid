@@ -402,13 +402,16 @@ function weatherHtml(w) {
 // Equipos provisionales: se recalculan con cada inscripción según las estadísticas
 function teamsProposalHtml(tp, meId = null) {
   if (!tp) {
-    return `<div class="card"><h2>Equipos</h2><p class="muted small">Se forman solos en cuanto haya 14 convocados:
+    return `<div class="card" id="teamsCard"><h2>Equipos</h2><p class="muted small">Se forman solos en cuanto haya 14 convocados:
       7 contra 7, 8 contra 8 desde 16 y triangular de tres equipos desde 21.</p></div>`;
   }
-  return `<div class="card"><h2>Equipos</h2>
-    <p class="small muted">${esc(tp.description)}. Se reequilibran con cada inscripción según las estadísticas de la temporada.</p>
+  const total = tp.teams.reduce((a, t) => a + t.rating, 0) || 1;
+  const even = tp.spread <= total * 0.04 ? 'muy parejos' : tp.spread <= total * 0.1 ? 'parejos' : 'algo descompensados';
+  return `<div class="card" id="teamsCard"><h2>Equipos recomendados</h2>
+    <p class="small muted">${esc(tp.description)}. Repartidos para que queden lo más parejos posible según puntos, goles y asistencias de la temporada:
+      <strong>${even}</strong> (diferencia de nivel ${tp.spread}). Quien aún no tiene partidos cuenta con el nivel medio.</p>
     <div class="teams">${tp.teams.map((t) => `
-      <div class="team"><h3><span class="team-dot" style="background:${esc(t.color)}"></span>${esc(t.name)} <span class="muted small">${t.players.length}</span></h3>
+      <div class="team"><h3><span class="team-dot" style="background:${esc(t.color)}"></span>${esc(t.name)} <span class="muted small">${t.players.length}</span><span class="team-level">nivel ${t.rating}</span></h3>
         <ul>${t.players.map((pl) => `<li${pl.player_id === meId ? ' class="me"' : ''}>${esc(pl.name)}${pl.player_id === meId ? ' (tú)' : ''}</li>`).join('')}</ul></div>`).join('')}</div>
     ${tp.schedule.length ? `<h3 style="margin-top:1.25rem">Orden de partidos</h3><ol class="schedule">${tp.schedule.map((m) => `
       <li><span class="muted">${esc(m.start)}</span><span>${esc(m.home)} – ${esc(m.away)}</span><span class="muted">${m.minutes} min</span></li>`).join('')}</ol>
@@ -1193,8 +1196,8 @@ async function adminConvocatoria(el) {
       ${d.previous ? `<p class="small muted">Prioridades según el entreno del ${esc(fmtShort(d.previous.date))}.</p>` : ''}
       ${PRIO_LEGEND}${renderList(d, null, { admin: true })}
       <div class="row" style="margin-top:1rem">
-        <button class="btn-primary btn-sm" data-act="adminAdd">${icon('plus')} Apuntar desde WhatsApp</button>
-        <span class="small muted">Marca a la gente en el orden en que se apuntó en el grupo.</span>
+        <button class="btn-primary btn-sm" data-act="pasteRoster">${icon('copy')} Pegar lista de WhatsApp</button>
+        <button class="btn-sm" data-act="adminAdd">${icon('plus')} Añadir a mano</button>
       </div></div>
     <div class="stack">
       ${teamsProposalHtml(d.teams_proposal)}
@@ -1260,6 +1263,77 @@ actions.callUp = async (el) => {
   await api(`/api/admin/sessions/${S.adminSessionId}/responses/${el.dataset.pid}/callup`, { method: 'PUT', body: { on: el.dataset.on === '1' } });
   toast(el.dataset.on === '1' ? 'Convocado como cambio' : 'Vuelve a reservas'); S.keepScroll = true; render();
 };
+// Pegar la lista tal cual sale de WhatsApp («1. Camilo», «* Andrés»…): se revisa a quién corresponde
+// cada línea y se apunta a todos en ese orden. Los equipos se proponen solos según las estadísticas.
+actions.pasteRoster = () => {
+  $dialog.innerHTML = `<form method="dialog" class="stack" id="rosterForm"><h2>Pegar lista de WhatsApp</h2>
+    <p class="small muted">Copia la lista del grupo y pégala aquí, una persona por línea. Da igual si lleva números, viñetas o emojis.</p>
+    <textarea id="rosterText" rows="12" placeholder="1. Camilo&#10;2. Andrés&#10;3. Daniel G." style="font-family:inherit"></textarea>
+    <div class="dialog-actions"><button value="cancel" class="btn-ghost">Volver</button>
+      <button type="button" class="btn-primary" id="rosterReview">Revisar</button></div></form>`;
+  $dialog.showModal();
+  $dialog.onclose = null;
+  const btn = document.getElementById('rosterReview');
+  btn.onclick = async () => {
+    if (btn.disabled) return;
+    btn.disabled = true; btn.setAttribute('aria-busy', 'true');
+    try {
+      const text = document.getElementById('rosterText').value;
+      const r = await api(`/api/admin/sessions/${S.adminSessionId}/roster/preview`, { method: 'POST', body: { text } });
+      if (!r.lines.length) toast('No se ha encontrado ningún nombre en el texto', true);
+      else rosterReview(r);
+    } catch (err) { toast(err.message, true); }
+    finally { if (btn.isConnected) { btn.disabled = false; btn.removeAttribute('aria-busy'); } }
+  };
+};
+
+function rosterReview(r) {
+  const people = S.players;
+  const opt = (id, label, sel) => `<option value="${id}" ${sel ? 'selected' : ''}>${esc(label)}</option>`;
+  const STATE = { match: ['ok', 'Encontrado'], ambiguous: ['warn', 'Elige quién es'], new: ['', 'No tiene ficha'], duplicate: ['', 'Repetido'] };
+  const rows = r.lines.map((l, i) => {
+    const pre = l.status === 'match' ? l.player_id : null;
+    const first = l.options.map((o) => opt(o.id, o.name, false)).join('');
+    const choices = `${l.status === 'ambiguous' ? opt('', 'Elige…', true) : ''}
+      ${l.status === 'new' ? opt(`new:${l.name}`, `Crear ficha: ${l.name}`, true) : opt(`new:${l.name}`, `Crear ficha nueva: ${l.name}`, false)}
+      ${opt('skip', 'No apuntar esta línea', l.status === 'duplicate')}
+      ${first ? `<optgroup label="Posibles">${first}</optgroup>` : ''}
+      <optgroup label="Todo el equipo">${people.map((p) => opt(p.id, p.name, p.id === pre && l.status !== 'duplicate')).join('')}</optgroup>`;
+    const [cls, label] = STATE[l.status];
+    return `<div class="roster-row"><span class="roster-n">${i + 1}</span>
+      <div class="roster-line"><span class="small muted">${esc(l.raw)}</span>
+        <select data-i="${i}" aria-label="Quién es «${esc(l.name)}»">${choices}</select></div>
+      <span class="chip ${cls}">${label}${l.in_list ? ' · ya estaba' : ''}</span></div>`;
+  }).join('');
+  const pending = r.lines.filter((l) => l.status === 'ambiguous').length;
+  $dialog.innerHTML = `<form method="dialog" class="stack"><h2>Revisa la lista · ${plural(r.lines.length, 'línea', 'líneas')}</h2>
+    <p class="small muted">Se apunta en este orden. Comprueba los nombres dudosos${pending ? ` (<strong>${pending}</strong> por elegir)` : ''}; a quien no tenga ficha se le crea una sin cuenta.</p>
+    <div class="roster-list">${rows}</div>
+    ${r.in_list_count ? `<label><input type="checkbox" id="rosterReplace" checked> Quien estaba apuntado y no sale en esta lista pasa a «No van»</label>` : ''}
+    <div class="dialog-actions"><button value="cancel" class="btn-ghost">Volver</button><button value="ok" class="btn-primary">Apuntar y hacer equipos</button></div></form>`;
+  if (!$dialog.open) $dialog.showModal();
+  $dialog.onclose = async () => {
+    if ($dialog.returnValue !== 'ok') return;
+    const items = [];
+    const replace = !!document.getElementById('rosterReplace')?.checked;
+    let missing = 0;
+    $dialog.querySelectorAll('.roster-list select').forEach((sel) => {
+      const v = sel.value;
+      if (!v) missing++;
+      else if (v.startsWith('new:')) items.push({ new_name: v.slice(4) });
+      else if (v !== 'skip') items.push({ player_id: Number(v) });
+    });
+    if (missing && !await confirmDialog({ title: `Hay ${plural(missing, 'línea', 'líneas')} sin elegir`, body: 'Esas líneas no se apuntarán. ¿Seguimos?', confirm: 'Seguir' })) return rosterReview(r);
+    try {
+      const res = await api(`/api/admin/sessions/${S.adminSessionId}/roster`, { method: 'POST',
+        body: { items, replace } });
+      toast(`Lista pasada: ${res.added} apuntados${res.created.length ? `, ${res.created.length} fichas nuevas` : ''}${res.removed ? `, ${res.removed} ya no van` : ''}`);
+      S.keepScroll = true; await render();
+      document.getElementById('teamsCard')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
 // La convocatoria va por WhatsApp: Coordinación pasa a la web a quienes se apuntan allí.
 // Se apuntan en el orden en que se marcan, que es el que cuenta para entrar.
 actions.adminAdd = () => {

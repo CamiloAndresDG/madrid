@@ -842,3 +842,12 @@ dialog.lightbox { width: min(1100px, calc(100% - 16px)); max-height: calc(100% -
 .forum-access { margin-bottom: 1.25rem; }
 .forum-access h2 { font-size: 1rem; margin: 0 0 .25rem; }
 .forum-access .row { margin-top: .75rem; }
+
+/* Lista pegada desde WhatsApp */
+.roster-list { max-height: 55vh; overflow-y: auto; display: grid; gap: .35rem; }
+.roster-row { display: grid; grid-template-columns: 1.6rem 1fr auto; gap: .6rem; align-items: center; padding: .45rem .5rem; border: 1px solid var(--border); border-radius: var(--r-sm); }
+.roster-n { font-variant-numeric: tabular-nums; color: var(--muted); text-align: right; }
+.roster-line { display: grid; gap: .2rem; min-width: 0; }
+.roster-line select { width: 100%; }
+@media (max-width: 520px) { .roster-row { grid-template-columns: 1.4rem 1fr; } .roster-row .chip { grid-column: 2; justify-self: start; } }
+.team-level { font-size: .78rem; color: var(--muted); font-weight: 400; margin-left: auto; }

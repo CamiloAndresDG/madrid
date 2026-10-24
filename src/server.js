@@ -11,6 +11,7 @@ const Audit = require('./audit');
 const F = require('./forum');
 const N = require('./notify');
 const W = require('./weather');
+const R = require('./roster');
 
 const PORT = process.env.PORT || 3000;
 
@@ -666,6 +667,66 @@ admin.put('/sessions/:id/responses/:playerId/callup', wrap(async (req) => {
   });
   await N.notifyChanges(db, before, await N.snapshot(s.id));
   return { ok: true };
+}));
+
+// Lista pegada desde WhatsApp: primero se revisa (a quién corresponde cada línea)…
+admin.post('/sessions/:id/roster/preview', wrap(async (req) => {
+  const s = await sessionOr404(req.params.id);
+  const players = await db.all('SELECT id, name, first_name, active FROM players WHERE active = 1 ORDER BY name');
+  const lines = R.preview(req.body?.text, players);
+  const inList = new Set((await L.computeList(s)).entries.map((e) => e.player_id));
+  return { lines: lines.map((l) => ({ ...l, in_list: !!(l.player_id && inList.has(l.player_id)) })), in_list_count: inList.size };
+}));
+
+// …y después se apunta a todos en el orden de la lista. Quien no tenga ficha se crea (sin cuenta).
+// Con replace, quien estaba apuntado y ya no aparece en la lista pasa a «No van».
+admin.post('/sessions/:id/roster', wrap(async (req) => {
+  const s = await sessionOr404(req.params.id);
+  const items = Array.isArray(req.body?.items) ? req.body.items.slice(0, 60) : [];
+  if (!items.length) throw new HttpError(400, 'La lista está vacía');
+  const replace = !!req.body?.replace;
+  const result = await tx(async (c) => {
+    const ids = [];
+    const created = [];
+    for (const it of items) {
+      let pid = Number(it.player_id) || null;
+      if (!pid && it.new_name) {
+        const name = R.titleCase(String(it.new_name).trim().replace(/\s+/g, ' ').slice(0, 80));
+        if (!name) continue;
+        const [first, ...rest] = name.split(' ');
+        pid = (await c.get(`INSERT INTO players (name, first_name, last_name) VALUES ($1, $2, $3) RETURNING id`,
+          [name, first, rest.join(' ') || null])).id;
+        created.push(name);
+      }
+      if (pid && !ids.includes(pid)) ids.push(pid);
+    }
+    const known = await c.all('SELECT id FROM players WHERE id = ANY($1::int[])', [ids]);
+    if (known.length !== ids.length) throw new HttpError(400, 'Alguna de las personas elegidas no existe');
+    // Hora de inscripción escalonada para respetar el orden de WhatsApp (la prioridad sigue mandando)
+    const prev = await c.all(`SELECT player_id, signed_up_at FROM responses WHERE session_id = $1 AND answer = 'yes'`, [s.id]);
+    const base = Math.min(Date.now(), ...prev.filter((r) => ids.includes(r.player_id) && r.signed_up_at).map((r) => Date.parse(r.signed_up_at)));
+    const now = nowIso();
+    for (const [i, pid] of ids.entries()) {
+      await c.run(`INSERT INTO responses (session_id, player_id, answer, signed_up_at, updated_at, added_by_admin)
+        VALUES ($1, $2, 'yes', $3, $4, 1)
+        ON CONFLICT (session_id, player_id) DO UPDATE SET answer = 'yes', signed_up_at = excluded.signed_up_at,
+          updated_at = excluded.updated_at, added_by_admin = 1, cancel_reason = NULL, cancel_notified = NULL,
+          locked_rank = NULL, locked_priority = NULL`,
+      [s.id, pid, new Date(base + i * 1000).toISOString(), now]);
+    }
+    const removed = replace ? prev.filter((r) => !ids.includes(r.player_id)).map((r) => r.player_id) : [];
+    if (removed.length) {
+      await c.run(`UPDATE responses SET answer = 'no', updated_at = $1, called_up = 0, called_up_by = NULL, called_up_at = NULL,
+        locked_rank = NULL, locked_priority = NULL WHERE session_id = $2 AND player_id = ANY($3::int[])`, [now, s.id, removed]);
+    }
+    const bits = [`${ids.length} en la lista`];
+    if (created.length) bits.push(`${created.length === 1 ? 'nueva ficha' : 'nuevas fichas'}: ${listNames(created)}`);
+    if (removed.length) bits.push(`${removed.length} ya no van`);
+    await Audit.audit(c, req.player, { action: 'session.roster', entity: 'session', entityId: s.id, sessionId: s.id,
+      summary: `pasó la lista de WhatsApp del ${dm(s.date)} (${bits.join('; ')})` });
+    return { added: ids.length, created, removed: removed.length };
+  });
+  return { ok: true, ...result };
 }));
 
 // Coordinación apunta o quita a alguien sin generar incidencias

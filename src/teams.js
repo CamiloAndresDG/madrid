@@ -84,7 +84,10 @@ function propose(entries, stats) {
     players: members.sort((a, b) => a.name.localeCompare(b.name)),
     rating: Math.round(members.reduce((a, p) => a + p.rating, 0) * 10) / 10,
   }));
+  const levels = teams.map((t) => t.rating);
   return {
+    // Diferencia de nivel entre el equipo más fuerte y el más flojo (cuanto más baja, más parejo)
+    spread: Math.round((Math.max(...levels) - Math.min(...levels)) * 10) / 10,
     format: k === 3 ? 'triangular' : 'partido',
     description: k === 3
       ? `Triangular de 3 equipos · partidos de ${TRIANGULAR_MATCH_MINUTES} minutos`
