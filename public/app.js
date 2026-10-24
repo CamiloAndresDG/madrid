@@ -99,12 +99,6 @@ function avatar(name) {
   for (const c of String(name || '')) h = (h * 31 + c.codePointAt(0)) >>> 0;
   return `<span class="avatar" data-tone="${h % 6}" aria-hidden="true">${esc(nameInitials(name))}</span>`;
 }
-// Días que faltan hasta una fecha AAAA-MM-DD, contados en hora de Madrid
-function daysUntil(dateStr) {
-  const today = new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date());
-  return Math.round((Date.parse(`${dateStr}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86400000);
-}
-const whenLabel = (n) => (n === 0 ? 'Hoy' : n === 1 ? 'Mañana' : n > 1 ? `En ${n} días` : n === -1 ? 'Ayer' : `Hace ${-n} días`);
 const PRIO_LEGEND = `<div class="prio-legend" aria-label="Prioridades">
   <span>${prioBadge(1)} No vino la semana pasada</span>
   <span>${prioBadge(2)} Sí vino</span>
@@ -172,7 +166,8 @@ function renderNav() {
   const h = currentPath();
   const items = [];
   if (S.token) {
-    items.push(['/foro', 'Foro', 'megaphone'], ['/', 'Convocatoria', 'calendar'], ['/resultados', 'Resultados', 'trophy']);
+    // La convocatoria se lleva por WhatsApp: la lista la gestiona Coordinación
+    items.push(['/foro', 'Foro', 'megaphone'], ['/resultados', 'Resultados', 'trophy']);
   }
   items.push(['/normas', 'Normas', 'book']);
   if (S.token && canManage()) items.push(['/admin', 'Coordinación', 'shield']);
@@ -379,7 +374,7 @@ async function viewHome() {
     $app.innerHTML = `<section class="hero hero-welcome" aria-labelledby="welcomeHead">
         <img class="hero-logo" src="/icono-gmadrid.png" alt="" width="56" height="56">
         <h1 class="hero-date" id="welcomeHead">Fútbol 7 · Gmadrid</h1>
-        <p class="hero-lead">Apúntate a los entrenamientos de los miércoles. Con tu cuenta confirmas si vienes, ves quién va y en qué equipo juegas.</p>
+        <p class="hero-lead">Entrenamos los miércoles. Con tu cuenta ves los resultados, la clasificación, tu temporada y el foro del equipo.</p>
         <div class="hero-actions">
           <a class="btn btn-primary btn-big" href="/registro">Crear cuenta</a>
           <a class="btn btn-quiet btn-big" href="/entrar">Ya tengo cuenta</a></div></section>
@@ -390,120 +385,8 @@ async function viewHome() {
       </section>`;
     return;
   }
-  let me;
-  try { me = await api('/api/me'); }
-  catch (e) {
-    $app.innerHTML = `<div class="card empty"><h2>Tu sesión ha caducado</h2><p class="muted">Vuelve a entrar para seguir.</p>
-      <a class="btn btn-primary" href="/entrar">Entrar</a></div>`;
-    return;
-  }
-  S.me = me;
-  const s = me.session;
-  let html = '';
-
-  if (me.expelled) {
-    html += `<div class="status-box danger">${icon('alert')}<div><strong>Tienes dos faltas graves esta temporada</strong>
-      Según las normas de la sección quedas fuera del equipo. Habla con Coordinación.</div></div>`;
-  }
-
-  // Avisos: entras por el triangular, te convocan como cambio, pasas a reservas…
-  if (me.notifications?.length) {
-    html += me.notifications.map((n) => `<div class="status-box ${n.kind === 'demoted' ? 'warn' : 'ok'} notice" role="status">
-      ${icon(n.kind === 'demoted' ? 'wait' : 'check')}<div style="flex:1"><strong>${esc(n.message)}</strong>
-      <small class="muted">${esc(fmtDateTime(n.created_at))}</small></div>
-      <button class="btn-ghost btn-icon" data-act="readNotice" data-id="${n.id}" aria-label="Marcar como leído" title="Entendido">${icon('x')}</button></div>`).join('');
-  }
-
-  if (!s) {
-    html += `<div class="page-head"><h1>Convocatoria</h1></div>
-      <div class="card empty"><h2>Todavía no hay convocatoria</h2>
-      <p class="muted">Aparecerá aquí en cuanto Coordinación la publique. Normalmente, el domingo por la tarde.</p></div>`;
-    $app.innerHTML = html;
-    return;
-  }
-
-  const sess = s.session;
-  const fmt = s.format;
-  const conv = s.titulares.length + s.cambios.length;
-  const total = conv + s.reservas.length;
-  const mine = s.my_entry;
-  const ahead = mine && mine.role === 'reserva' ? s.reservas.findIndex((e) => e.player_id === mine.player_id) : 0;
-  const nextHint = fmt.next && fmt.next.missing > 0 ? `Faltan ${fmt.next.missing} para ${fmt.next.label}.` : '';
-  let status;
-  if (sess.cancelled) {
-    status = { cls: 'is-cancel', ic: 'x', title: 'Entrenamiento cancelado', text: 'Este miércoles no hay entreno.' };
-  } else if (mine && mine.role === 'titular') {
-    status = { cls: 'is-in', ic: 'check',
-      title: fmt.kind === 'triangular' ? `Convocado para el triangular · puesto ${mine.position}` : `Estás dentro · puesto ${mine.position} de ${fmt.cutoff}`,
-      text: fmt.kind === 'faltan' ? `${mine.reason}. ${fmt.label}: si no se llega a ${fmt.min}, no hay partido.` : `${mine.reason}.` };
-  } else if (mine && mine.role === 'cambio') {
-    status = { cls: 'is-in', ic: 'check', title: 'Convocado como cambio', text: 'Coordinación te ha llamado para entrar en los cambios. ¡Trae las botas!' };
-  } else if (mine) {
-    status = { cls: 'is-wait', ic: 'wait', title: ahead > 0 ? `Reserva · ${plural(ahead, 'persona', 'personas')} por delante` : 'Reserva · eres la siguiente persona en entrar',
-      text: fmt.kind === 'triangular'
-        ? 'Ya hay triangular: Coordinación decide si te convoca como cambio. Si alguien se borra, entras automáticamente.'
-        : `Si alguien se borra, entras automáticamente. Si llegamos a ${fmt.triangular_at}, hay triangular y entras.` };
-  } else if (s.my_response === 'no') {
-    status = { cls: 'is-out', ic: 'x', title: 'Has dicho que no vienes', text: 'Si cambias de idea, apúntate: entrarás según tu prioridad y la hora.' };
-  } else if (!sess.is_open && !sess.has_started) {
-    status = { cls: '', ic: 'lock', title: 'Inscripciones cerradas por ahora', text: `Se abren el ${fmtDateTime(sess.opens_at)}.` };
-  } else {
-    status = { cls: '', ic: 'calendar', title: '¿Vienes este miércoles?',
-      text: fmt.kind === 'faltan' ? `${fmt.label}.` : `Ahora mismo: ${fmt.label.toLowerCase()}. ${nextHint}`.trim() };
-  }
-
-  const canYes = sess.is_open && !mine && !me.expelled;
-  const canNo = !sess.has_started && !sess.cancelled && s.my_response !== 'no';
-  const myKit = (s.equipment || []).filter((e) => (e.holders || []).some((h) => h.id === me.player.id));
-  const actionsHtml = canYes
-    ? `<button class="btn btn-primary btn-big" data-act="answerYes" data-id="${sess.id}">Voy</button>
-       ${canNo ? `<button class="btn btn-quiet btn-big" data-act="answerNo" data-id="${sess.id}">No puedo ir</button>` : ''}`
-    : (canNo ? `<button class="btn btn-quiet" data-act="answerNo" data-id="${sess.id}">${mine ? 'Borrarme' : 'No puedo ir'}</button>` : '');
-
-  const joined = S.justJoined; S.justJoined = false;
-  if (!introDone()) {
-    html += `<section class="card welcome" aria-labelledby="welcomeTitle">
-      <h2 id="welcomeTitle">Así funciona</h2>
-      <ul>
-        <li>${icon('calendar')}<span><strong>Apúntate cada semana.</strong> La convocatoria se publica el domingo y te apuntas con «Voy».</span></li>
-        <li>${icon('check')}<span><strong>La lista se hace sola.</strong> Entra primero quien no vino la semana anterior; después, por hora de inscripción.</span></li>
-        <li>${icon('clock')}<span><strong>Si no puedes, bórrate a tiempo.</strong> Sin penalización hasta el martes a las 15:00.</span></li>
-      </ul>
-      <div class="row"><button class="btn-primary" data-act="dismissIntro">Entendido</button><a class="btn btn-ghost" href="/normas">Ver todas las normas</a></div>
-    </section>`;
-  }
-  // El medidor avanza hacia el siguiente formato: 14 para jugar, 16 para 8 contra 8, 21 para triangular
-  const goal = fmt.next ? fmt.next.at : Math.max(conv, fmt.triangular_at);
-  const days = daysUntil(sess.date);
-  html += `<section class="hero${joined ? ' just-joined' : ''}" aria-labelledby="heroDate">
-    <div class="hero-top">
-      <span class="hero-when${days === 0 ? ' is-today' : ''}">${esc(sess.cancelled ? 'Cancelado' : whenLabel(days))}</span>
-    </div>
-    <h1 class="hero-date" id="heroDate">${esc(fmtDate(sess.date))}</h1>
-    <div class="hero-meta">
-      <span>${icon('clock')} ${esc(sess.start_time)} · llegada ${esc(sess.arrival_time || '21:45')}</span>
-      <span>${icon('pin')} ${esc(sess.location)}</span>
-    </div>
-    ${weatherHtml(s.weather)}
-    ${sess.cancelled ? '' : `<div class="hero-capacity">
-      <div class="hero-capacity-label"><span><strong>${conv}</strong> ${conv === 1 ? 'convocado' : 'convocados'} · ${esc(fmt.label)}</span>${s.reservas.length ? `<span>${plural(s.reservas.length, 'reserva', 'reservas')}</span>` : ''}</div>
-      <div class="hero-meter${fmt.kind === 'faltan' ? ' is-short' : ''}" role="meter" aria-label="Convocados" aria-valuemin="0" aria-valuemax="${goal}" aria-valuenow="${conv}"><span style="width:${pct(conv, goal)}%"></span></div>
-      ${nextHint && fmt.kind !== 'faltan' ? `<p class="hero-next">${esc(nextHint)}</p>` : ''}
-    </div>`}
-    ${sess.notes ? `<p class="hero-notes">${esc(sess.notes)}</p>` : ''}
-    <div class="hero-status ${status.cls}" aria-live="polite">${icon(status.ic)}
-      <div><strong>${esc(status.title)}</strong><p>${esc(status.text)}</p></div></div>
-    ${actionsHtml ? `<div class="hero-actions">${actionsHtml}</div>` : ''}
-    ${myKit.length ? `<div class="kit-line">${icon('bib')} Te toca llevar ${myKit.map((e) => esc(e.name.toLowerCase())).join(' y ')}.</div>` : ''}
-    ${canNo && mine ? `<p class="hero-foot">Puedes borrarte sin penalización hasta el ${esc(fmtDateTime(sess.tuesday_deadline))}.</p>` : ''}
-  </section>`;
-
-  html += `<div class="card"><div class="row spread" style="margin-bottom:.5rem"><h2 style="margin:0">Quién va · ${total}</h2>
-      <span class="chip${sess.finalized_at ? '' : ' brand live'}">${sess.finalized_at ? 'Lista cerrada' : 'En directo'}</span></div>
-    ${PRIO_LEGEND}
-    ${renderList(s, me.player.id, { flashMe: joined })}</div>`;
-  if (s.teams_proposal) html += teamsProposalHtml(s.teams_proposal, me.player.id);
-  $app.innerHTML = html;
+  // Con sesión, la página de inicio es el Foro (la convocatoria se lleva por WhatsApp)
+  go('/foro', { replace: true });
 }
 
 // Previsión para la hora del entreno; si llueve, el dress code de la casa
@@ -571,13 +454,6 @@ function infStatusChip(status) {
       : '<span class="chip danger">Confirmada</span>';
 }
 
-// Bienvenida: se muestra una sola vez por navegador
-function introDone() { try { return localStorage.getItem('f7_intro_done') === '1'; } catch (e) { return true; } }
-actions.dismissIntro = () => {
-  try { localStorage.setItem('f7_intro_done', '1'); } catch (e) { /* sin almacenamiento */ }
-  document.querySelector('.welcome')?.remove();
-};
-
 // Cierra la sesión en este navegador (y en el servidor si se puede)
 function forgetSession() {
   S.token = ''; S.me = null;
@@ -589,56 +465,6 @@ actions.logout = async () => {
   forgetSession(); toast('Sesión cerrada'); go('/');
 };
 
-actions.answerYes = async (el) => {
-  el.disabled = true;
-  await api(`/api/sessions/${el.dataset.id}/response`, { method: 'PUT', body: { answer: 'yes' } });
-  S.justJoined = true; S.keepScroll = true;
-  toast('¡Dentro! Te esperamos el miércoles');
-  await render();
-};
-
-actions.answerNo = async (el) => {
-  const me = await api('/api/me');
-  const s = me.session;
-  const sess = s.session;
-  const now = new Date();
-  let warning = '';
-  if (s.my_entry) {
-    if (now > new Date(sess.wednesday_deadline)) {
-      warning = 'Te borras después de las 15h del miércoles. Si no hay motivo justificado supone <strong>2 semanas en prioridad 3</strong> y cuenta como <strong>falta grave</strong> (dos en la temporada = fuera del equipo).';
-    } else if (now > new Date(sess.tuesday_deadline)) {
-      warning = 'Te borras después de las 15h del martes. Si no hay motivo justificado tendrás <strong>prioridad 3</strong> la próxima semana.';
-    }
-    if (sess.finalized_at) {
-      warning += `${warning ? '<br><br>' : ''}La lista final ya está publicada: <strong>avisa a Coordinación</strong> al borrarte
-        (si no, ${s.my_entry.role === 'titular' ? '2 semanas' : '1 semana'} en prioridad 3).`;
-    }
-  }
-  $dialog.innerHTML = `<form method="dialog" class="stack">
-    <h2>¿No puedes ir el ${esc(fmtDate(sess.date).toLowerCase())}?</h2>
-    ${warning ? `<div class="status-box warn small">${icon('alert')}<div>${warning}</div></div>` : ''}
-    <label class="field">Motivo (opcional)<textarea id="cancelReason" placeholder="Lesión, trabajo, viaje…"></textarea></label>
-    <p class="small muted" style="margin:0">Si hay un motivo justificado, cuéntalo aquí: Coordinación lo revisa antes de aplicar nada.</p>
-    ${s.my_entry && sess.finalized_at ? '<label><input type="checkbox" id="cancelNotified"> He avisado a Coordinación</label>' : ''}
-    <div class="dialog-actions">
-      <button value="cancel" class="btn-ghost">Volver</button>
-      <button value="ok" class="btn-danger" id="confirmNo">${s.my_entry ? 'Borrarme' : 'No puedo ir'}</button>
-    </div></form>`;
-  $dialog.showModal();
-  $dialog.onclose = async () => {
-    if ($dialog.returnValue !== 'ok') return;
-    const body = {
-      answer: 'no',
-      reason: document.getElementById('cancelReason')?.value || '',
-      notified: document.getElementById('cancelNotified')?.checked || false,
-    };
-    try {
-      const r = await api(`/api/sessions/${sess.id}/response`, { method: 'PUT', body });
-      toast(r.infraction ? `Anotado. Coordinación revisará: ${r.infraction.label.toLowerCase()}` : 'Anotado: no vienes este miércoles', !!r.infraction);
-    } catch (e) { toast(e.message, true); }
-    render();
-  };
-};
 
 // ---------- Clasificación: panel general y personal ----------
 
@@ -1164,12 +990,12 @@ async function viewRules() {
   $app.innerHTML = `<div class="page-head"><h1>Normas</h1></div>
   <div class="card"><h2>Entrenamientos</h2><ul class="rules">
     <li>Miércoles de 22:00 a 23:00 en el Polideportivo Marqués de Samaranch. Llega 15 minutos antes para cambiarte.</li>
-    <li>Coordinación publica la convocatoria, normalmente el <strong>domingo a las 17:00</strong>. Si no sabes seguro si podrás ir, no te apuntes.</li>
+    <li>La convocatoria se lanza en el <strong>grupo de WhatsApp</strong>, normalmente el <strong>domingo a las 17:00</strong>, y Coordinación pasa la lista a la web. Si no sabes seguro si podrás ir, no te apuntes.</li>
     <li>Hacen falta <strong>14 para jugar</strong> (7 contra 7). Con 16 se juega 8 contra 8 y con <strong>21, triangular</strong> de tres equipos con partidos de 8 minutos.</li>
     <li>A partir de 16 quedas en reservas, pero si se llega a 21 entras al triangular y te avisamos. Desde la 22.ª persona eres reserva y Coordinación decide si te convoca como cambio.</li>
     <li>Si alguien se borra, la primera reserva entra automáticamente.</li>
-    <li>La lista se completa en directo. Coordinación puede cerrarla antes del entreno.</li>
-    <li>Puedes borrarte sin penalización hasta el <strong>martes a las 15:00</strong>.</li></ul></div>
+    <li>Puedes borrarte sin penalización hasta el <strong>martes a las 15:00</strong>, avisando en el grupo.</li>
+    <li>Coordinación apunta quién llega tarde o no se presenta.</li></ul></div>
   <div class="card"><h2>Prioridades</h2>
     <p>Para entrar cuenta primero la prioridad y después la hora de inscripción.</p>
     <ul class="list">
@@ -1199,7 +1025,7 @@ async function viewAdmin(tab = 'convocatoria') {
   if (!canManage()) {
     $app.innerHTML = `<div class="card empty"><h2>Esta sección es para Coordinación</h2>
       <p class="muted">Si te toca ayudar con las convocatorias, pide a Coordinación el rol de gestión.</p>
-      <a class="btn" href="/">Volver a la convocatoria</a></div>`;
+      <a class="btn" href="/foro">Volver al foro</a></div>`;
     return;
   }
   if (tab === 'clasificacion') { go('/clasificacion'); return; }
@@ -1367,8 +1193,8 @@ async function adminConvocatoria(el) {
       ${d.previous ? `<p class="small muted">Prioridades según el entreno del ${esc(fmtShort(d.previous.date))}.</p>` : ''}
       ${PRIO_LEGEND}${renderList(d, null, { admin: true })}
       <div class="row" style="margin-top:1rem">
-        <select id="addPlayer"><option value="">Añadir a alguien…</option>${players.filter((p) => !inList.has(p.id)).map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
-        <button class="btn-sm" data-act="adminAdd">Añadir</button>
+        <button class="btn-primary btn-sm" data-act="adminAdd">${icon('plus')} Apuntar desde WhatsApp</button>
+        <span class="small muted">Marca a la gente en el orden en que se apuntó en el grupo.</span>
       </div></div>
     <div class="stack">
       ${teamsProposalHtml(d.teams_proposal)}
@@ -1432,17 +1258,42 @@ actions.adminSetResponse = async (el) => {
 };
 actions.callUp = async (el) => {
   await api(`/api/admin/sessions/${S.adminSessionId}/responses/${el.dataset.pid}/callup`, { method: 'PUT', body: { on: el.dataset.on === '1' } });
-  toast(el.dataset.on === '1' ? 'Convocado como cambio. Se le ha avisado' : 'Vuelve a reservas'); S.keepScroll = true; render();
+  toast(el.dataset.on === '1' ? 'Convocado como cambio' : 'Vuelve a reservas'); S.keepScroll = true; render();
 };
-actions.readNotice = async (el) => {
-  el.closest('.notice')?.remove();
-  await api('/api/notifications/read', { method: 'POST', body: { ids: [Number(el.dataset.id)] } }).catch(() => {});
-};
-actions.adminAdd = async () => {
-  const pid = document.getElementById('addPlayer').value;
-  if (!pid) return;
-  await api(`/api/admin/sessions/${S.adminSessionId}/responses/${pid}`, { method: 'PUT', body: { answer: 'yes' } });
-  render();
+// La convocatoria va por WhatsApp: Coordinación pasa a la web a quienes se apuntan allí.
+// Se apuntan en el orden en que se marcan, que es el que cuenta para entrar.
+actions.adminAdd = () => {
+  const d = S.detail;
+  const inList = new Set([...d.titulares, ...d.cambios, ...d.reservas].map((e) => e.player_id));
+  const people = S.players.filter((p) => !inList.has(p.id));
+  const order = [];
+  $dialog.innerHTML = `<form method="dialog" class="stack"><h2>Apuntar a la convocatoria</h2>
+    <p class="small muted">Marca a cada persona en el orden en que se apuntó en WhatsApp. El número indica su orden.</p>
+    <input type="search" id="eqFilter" placeholder="Buscar…" aria-label="Buscar persona" data-input="eqFilter">
+    <div class="pick-list" id="eqPick">${people.map((p) => `<label class="pick" data-name="${esc(p.name.toLowerCase())}">
+      <input type="checkbox" value="${p.id}"> <span style="flex:1">${esc(p.name)}</span><span class="pick-order muted small"></span></label>`).join('') || '<p class="muted small">Ya está apuntado todo el mundo.</p>'}</div>
+    <div class="dialog-actions"><button value="cancel" class="btn-ghost">Volver</button><button value="ok" class="btn-primary" id="addOk">Apuntar</button></div></form>`;
+  const pick = $dialog.querySelector('#eqPick');
+  const paint = () => {
+    pick.querySelectorAll('input').forEach((c) => { c.closest('.pick').querySelector('.pick-order').textContent = order.includes(Number(c.value)) ? `${order.indexOf(Number(c.value)) + 1}.º` : ''; });
+    $dialog.querySelector('#addOk').textContent = order.length ? `Apuntar a ${plural(order.length, 'persona', 'personas')}` : 'Apuntar';
+  };
+  pick.addEventListener('change', (e) => {
+    const id = Number(e.target.value);
+    if (e.target.checked) order.push(id); else order.splice(order.indexOf(id), 1);
+    paint();
+  });
+  $dialog.showModal();
+  $dialog.onclose = async () => {
+    if ($dialog.returnValue !== 'ok' || !order.length) return;
+    try {
+      for (const pid of order) {
+        await api(`/api/admin/sessions/${S.adminSessionId}/responses/${pid}`, { method: 'PUT', body: { answer: 'yes' } });
+      }
+      toast(`${plural(order.length, 'persona apuntada', 'personas apuntadas')}`);
+    } catch (e) { toast(e.message, true); }
+    S.keepScroll = true; render();
+  };
 };
 
 // --- Material ---
